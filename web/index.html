@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stonepen</title>
+  <meta name="description" content="Stonepen — vector handwriting engine. Capture ink as editable vector strokes.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <span id="app-title">Stonepen</span>
+      <div id="tool-group">
+        <button id="btn-pen" class="tool-btn active" data-tool="pen">Pen</button>
+        <button id="btn-pencil" class="tool-btn" data-tool="pencil">Pencil</button>
+        <button id="btn-highlighter" class="tool-btn" data-tool="highlighter">Highlighter</button>
+        <button id="btn-eraser" class="tool-btn" data-tool="eraser">Eraser</button>
+        <button id="btn-lasso" class="tool-btn" data-tool="lasso">Lasso</button>
+        <button id="btn-pan" class="tool-btn" data-tool="pan">Pan</button>
+      </div>
+      <div id="brush-group">
+        <label for="width-slider">Width</label>
+        <input id="width-slider" type="range" min="0.5" max="48" step="0.5" value="3">
+        <input id="color-picker" type="color" value="#000000" title="Brush color">
+      </div>
+      <div id="action-group">
+        <button id="btn-undo">Undo</button>
+        <button id="btn-redo">Redo</button>
+        <button id="btn-clear">Clear</button>
+        <button id="btn-save">Save</button>
+        <button id="btn-load">Load</button>
+        <input id="load-input" type="file" accept=".json" style="display:none">
+        <button id="btn-export-svg">Export SVG</button>
+        <button id="btn-export-png">Export PNG</button>
+      </div>
+    </header>
+    <main id="canvas-container">
+      <canvas id="ink-canvas" tabindex="0"></canvas>
+    </main>
+    <footer id="status-bar">strokes: 0  selected: 0  tool: Pen  zoom: 100%  saved</footer>
+  </div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
