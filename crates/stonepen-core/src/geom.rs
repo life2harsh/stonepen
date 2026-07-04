@@ -298,15 +298,28 @@ pub fn compute_conservative_stroke_bbox(
     if pts.is_empty() {
         return None;
     }
-    let effective_zoom = 10.0f32;
+    let effective_zoom = 20.0f32;
     let tolerance = 0.35f32 / effective_zoom;
     let centerline = crate::smooth::adaptive_catmull_rom(pts, effective_zoom);
-    let outline = generate_stroke_outline(&centerline, brush, 16)?;
-    let mut bbox = compute_outline_bbox(&outline)?;
-    let pad = tolerance + 0.1;
-    bbox.min_x -= pad;
-    bbox.min_y -= pad;
-    bbox.max_x += pad;
-    bbox.max_y += pad;
-    Some(bbox)
+    if centerline.is_empty() {
+        return None;
+    }
+    let mut min_x = centerline[0].x;
+    let mut min_y = centerline[0].y;
+    let mut max_x = centerline[0].x;
+    let mut max_y = centerline[0].y;
+    for p in centerline.iter().skip(1) {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    let max_half_w = crate::brush::stroke_w(brush, 1.0) * 0.5;
+    let pad = max_half_w + tolerance + 0.1;
+    Some(BBox {
+        min_x: min_x - pad,
+        min_y: min_y - pad,
+        max_x: max_x + pad,
+        max_y: max_y + pad,
+    })
 }

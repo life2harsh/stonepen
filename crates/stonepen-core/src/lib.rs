@@ -681,6 +681,21 @@ mod tests {
     }
 
     #[test]
+    fn test_resampling_endpoint_precision_needed() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(2.05, 0.0)];
+        let resampled = resample::resample_by_distance(&pts, 2.0);
+        assert_eq!(resampled.len(), 3);
+        assert!((resampled[2].x - 2.05).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_resampling_endpoint_precision_identical() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(2.0 + 1e-12, 0.0)];
+        let resampled = resample::resample_by_distance(&pts, 2.0);
+        assert_eq!(resampled.len(), 2);
+    }
+
+    #[test]
     fn test_resampling_non_divisible_length() {
         let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(5.0, 0.0)];
         let resampled = resample::resample_by_distance(&pts, 2.0);
@@ -724,9 +739,9 @@ mod tests {
             make_ink_point(10.0, 0.0),
         ];
         let low = smooth::adaptive_catmull_rom(&pts, 1.0);
-        let high = smooth::adaptive_catmull_rom(&pts, 100.0);
+        let high = smooth::adaptive_catmull_rom(&pts, 10000.0);
         assert!(high.len() > low.len());
-        assert!(high.len() < 500);
+        assert!(high.len() < 10000);
         for p in &high {
             assert!(p.x.is_finite());
             assert!(p.y.is_finite());
@@ -742,8 +757,8 @@ mod tests {
         ];
         let brush = Brush::default_pen();
         let bbox = geom::compute_conservative_stroke_bbox(&pts, &brush).unwrap();
-        let centerline = smooth::adaptive_catmull_rom(&pts, 10.0);
-        let outline = geom::generate_stroke_outline(&centerline, &brush, 16).unwrap();
+        let centerline = smooth::adaptive_catmull_rom(&pts, 500.0);
+        let outline = geom::generate_stroke_outline(&centerline, &brush, 64).unwrap();
         for p in &outline {
             assert!(
                 p.x >= bbox.min_x,
@@ -778,8 +793,23 @@ mod tests {
         let mut brush = Brush::default_pen();
         brush.base_w = 20.0;
         let bbox = geom::compute_conservative_stroke_bbox(&pts, &brush).unwrap();
-        let centerline = smooth::adaptive_catmull_rom(&pts, 10.0);
-        let outline = geom::generate_stroke_outline(&centerline, &brush, 16).unwrap();
+        let centerline = smooth::adaptive_catmull_rom(&pts, 500.0);
+        let outline = geom::generate_stroke_outline(&centerline, &brush, 64).unwrap();
+        for p in &outline {
+            assert!(p.x >= bbox.min_x);
+            assert!(p.y >= bbox.min_y);
+            assert!(p.x <= bbox.max_x);
+            assert!(p.y <= bbox.max_y);
+        }
+    }
+
+    #[test]
+    fn test_highlighter_stroke_bbox() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
+        let brush = Brush::default_highlighter();
+        let bbox = geom::compute_conservative_stroke_bbox(&pts, &brush).unwrap();
+        let centerline = smooth::adaptive_catmull_rom(&pts, 500.0);
+        let outline = geom::generate_stroke_outline(&centerline, &brush, 64).unwrap();
         for p in &outline {
             assert!(p.x >= bbox.min_x);
             assert!(p.y >= bbox.min_y);
@@ -792,9 +822,11 @@ mod tests {
     fn test_taper_stability_growing_nonzero_start() {
         let mut brush = Brush::default_pen();
         brush.taper_start = 2.0;
-        brush.taper_end = 2.0;
+        brush.taper_end = 0.0;
         let pts1 = vec![
             make_ink_point(0.0, 0.0),
+            make_ink_point(1.0, 0.0),
+            make_ink_point(2.0, 0.0),
             make_ink_point(5.0, 0.0),
             make_ink_point(10.0, 0.0),
         ];
@@ -802,10 +834,36 @@ mod tests {
         let mut pts2 = pts1.clone();
         pts2.push(make_ink_point(15.0, 0.0));
         pts2.push(make_ink_point(20.0, 0.0));
-        pts2.push(make_ink_point(25.0, 0.0));
+        pts2.push(make_ink_point(30.0, 0.0));
         let outline2 = geom::generate_stroke_outline(&pts2, &brush, 8).unwrap();
-        assert!((outline1[0].x - outline2[0].x).abs() < 1e-4);
-        assert!((outline1[0].y - outline2[0].y).abs() < 1e-4);
+
+        let get_width_at_1 = |outline: &[Point2]| -> f32 {
+            let mut left_p = Point2::new(0.0, 0.0);
+            let mut left_min_dist = f32::MAX;
+            let mut right_p = Point2::new(0.0, 0.0);
+            let mut right_min_dist = f32::MAX;
+            let mid = outline.len() / 2;
+            for (idx, p) in outline.iter().enumerate() {
+                let dist = (p.x - 1.0).abs();
+                if idx < mid {
+                    if dist < left_min_dist {
+                        left_min_dist = dist;
+                        left_p = *p;
+                    }
+                } else {
+                    if dist < right_min_dist {
+                        right_min_dist = dist;
+                        right_p = *p;
+                    }
+                }
+            }
+            (left_p.y - right_p.y).abs()
+        };
+
+        let w1 = get_width_at_1(&outline1);
+        let w2 = get_width_at_1(&outline2);
+        assert!((w1 - 1.5).abs() < 0.1);
+        assert!((w1 - w2).abs() < 1e-4);
     }
 
     #[test]

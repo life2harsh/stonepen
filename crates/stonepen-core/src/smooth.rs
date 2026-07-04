@@ -1,5 +1,9 @@
 use crate::point::InkPoint;
 
+const MAX_DEPTH: usize = 10;
+const MAX_OUTPUT_PTS: usize = 10000;
+const MAX_ERR_PX: f32 = 0.35;
+
 pub fn smooth_pts(pts: &[InkPoint], factor: f32) -> Vec<InkPoint> {
     if pts.len() < 3 {
         return pts.to_vec();
@@ -35,8 +39,7 @@ pub fn adaptive_catmull_rom(pts: &[InkPoint], effective_zoom: f32) -> Vec<InkPoi
     if pts.len() < 2 {
         return pts.to_vec();
     }
-    let max_err_px = 0.35f32;
-    let tolerance = max_err_px / effective_zoom;
+    let tolerance = MAX_ERR_PX / effective_zoom;
     let mut out = Vec::new();
     out.push(pts[0]);
     for i in 0..pts.len() - 1 {
@@ -78,6 +81,9 @@ pub fn adaptive_catmull_rom(pts: &[InkPoint], effective_zoom: f32) -> Vec<InkPoi
             recursive_subdivide(
                 p0, p1, p2, p3, t0, t1, t2, t3, t1, t2, p1, p2, tolerance, 0, &mut out,
             );
+        }
+        if out.len() >= MAX_OUTPUT_PTS {
+            break;
         }
     }
     out
@@ -165,7 +171,7 @@ fn recursive_subdivide(
     depth: usize,
     out: &mut Vec<InkPoint>,
 ) {
-    if depth >= 6 {
+    if depth >= MAX_DEPTH || out.len() >= MAX_OUTPUT_PTS {
         let last = pt_b;
         if let Some(last_p) = out.last() {
             let dx = last.x - last_p.x;

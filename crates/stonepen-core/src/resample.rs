@@ -38,7 +38,8 @@ pub fn resample_by_distance(pts: &[InkPoint], spacing: f32) -> Vec<InkPoint> {
     if let Some(&l) = out.last() {
         let dx = last.x - l.x;
         let dy = last.y - l.y;
-        if (dx * dx + dy * dy).sqrt() > 0.1 {
+        const END_EPS_SQ: f32 = 1e-10;
+        if dx * dx + dy * dy > END_EPS_SQ {
             out.push(last);
         }
     } else {
