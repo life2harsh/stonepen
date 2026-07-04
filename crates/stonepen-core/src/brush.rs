@@ -89,3 +89,17 @@ impl Brush {
         }
     }
 }
+
+pub fn stroke_w(brush: &Brush, press: f32) -> f32 {
+    match brush.kind {
+        BrushKind::Highlighter => brush.base_w,
+        _ => {
+            let p = press.clamp(0.0, 1.0);
+            if p <= 0.0 {
+                return 0.0;
+            }
+            let shaped = p * p * (3.0 - 2.0 * p);
+            brush.base_w * (brush.min_press + shaped * (brush.max_press - brush.min_press))
+        }
+    }
+}

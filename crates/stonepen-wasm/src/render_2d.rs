@@ -159,45 +159,26 @@ impl Renderer {
         if pts.is_empty() {
             return;
         }
-        let style = Self::stroke_style_str(brush);
-        self.ctx.set_stroke_style_str(&style);
-        self.ctx.set_line_cap("round");
-        self.ctx.set_line_join("round");
-        if pts.len() == 1 {
-            let world = xform.apply(pts[0].pos());
-            let sp = vp.world_to_screen(world);
-            let width = (brush.base_w * pts[0].press.max(brush.min_press) * vp.zoom) as f64;
-            self.ctx.set_line_width(width.max(0.5));
-            self.ctx.begin_path();
-            let _ = self.ctx.arc(
-                sp.x as f64,
-                sp.y as f64,
-                width * 0.5,
-                0.0,
-                std::f64::consts::TAU,
-            );
-            self.ctx.fill();
+        let outline = match stonepen_core::geom::generate_stroke_outline(pts, brush) {
+            Some(o) => o,
+            None => return,
+        };
+        if outline.is_empty() {
             return;
         }
-        let mut prev_world = xform.apply(pts[0].pos());
-        let mut prev_sp = vp.world_to_screen(prev_world);
-        for pt in pts.iter().skip(1) {
-            let world = xform.apply(pt.pos());
-            let dx = world.x - prev_world.x;
-            let dy = world.y - prev_world.y;
-            if dx * dx + dy * dy < 0.01 {
-                continue;
-            }
-            let sp = vp.world_to_screen(world);
-            let width = (brush.base_w * pt.press.max(brush.min_press) * vp.zoom) as f64;
-            self.ctx.set_line_width(width.max(0.5));
-            self.ctx.begin_path();
-            self.ctx.move_to(prev_sp.x as f64, prev_sp.y as f64);
+        let style = Self::stroke_style_str(brush);
+        self.ctx.set_fill_style_str(&style);
+        self.ctx.begin_path();
+        let p0 = xform.apply(outline[0]);
+        let sp0 = vp.world_to_screen(p0);
+        self.ctx.move_to(sp0.x as f64, sp0.y as f64);
+        for pt in outline.iter().skip(1) {
+            let p = xform.apply(*pt);
+            let sp = vp.world_to_screen(p);
             self.ctx.line_to(sp.x as f64, sp.y as f64);
-            self.ctx.stroke();
-            prev_world = world;
-            prev_sp = sp;
         }
+        self.ctx.close_path();
+        self.ctx.fill();
     }
 
     fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport, selected: bool) {

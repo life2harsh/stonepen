@@ -40,15 +40,11 @@ impl PointerInput {
 
     pub fn to_ink_point(&self, vp: &Viewport) -> InkPoint {
         let world = vp.screen_to_world(stonepen_core::point::Point2::new(self.x, self.y));
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "client: ({:.2}, {:.2}) | screen: ({:.2}, {:.2}) | world: ({:.2}, {:.2}) | pan: ({:.2}, {:.2}) | zoom: {:.2} | dpr: {:.2}",
-            self.cx, self.cy, self.x, self.y, world.x, world.y, vp.pan_x, vp.pan_y, vp.zoom, vp.dpr
-        )));
         InkPoint {
             x: world.x,
             y: world.y,
             t_ms: self.t_ms,
-            press: self.press.max(0.001),
+            press: self.press,
             tilt_x: self.tilt_x,
             tilt_y: self.tilt_y,
             twist: self.twist,
@@ -67,5 +63,17 @@ pub fn parse_pointer_kind(s: &str) -> PointerKind {
 }
 
 pub fn get_inputs(e: &PointerEvent, canvas: &HtmlCanvasElement) -> Vec<PointerInput> {
-    vec![PointerInput::from_event(e, canvas)]
+    let coalesced = e.get_coalesced_events();
+    if coalesced.length() > 0 {
+        let mut out = Vec::with_capacity(coalesced.length() as usize);
+        for i in 0..coalesced.length() {
+            let val = coalesced.get(i);
+            if let Ok(pe) = wasm_bindgen::JsCast::dyn_into::<PointerEvent>(val) {
+                out.push(PointerInput::from_event(&pe, canvas));
+            }
+        }
+        out
+    } else {
+        vec![PointerInput::from_event(e, canvas)]
+    }
 }

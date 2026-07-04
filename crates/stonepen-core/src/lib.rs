@@ -21,9 +21,10 @@ pub mod viewport;
 pub mod xform;
 
 pub use bbox::BBox;
-pub use brush::{Brush, BrushKind};
+pub use brush::{stroke_w, Brush, BrushKind};
 pub use color::ColorRgba;
 pub use doc::{InkBackground, InkDoc};
+pub use geom::{compute_outline_bbox, generate_stroke_outline};
 pub use ids::{BrushId, DocId, LayerId, StrokeId};
 pub use layer::InkLayer;
 pub use ops::{InkOp, InkTx, UndoRedo};
@@ -617,5 +618,92 @@ mod tests {
         assert_eq!(session.undo_redo.redo_stack.len(), 1);
         session.add_stroke(make_s());
         assert_eq!(session.undo_redo.redo_stack.len(), 0);
+    }
+
+    #[test]
+    fn test_uniform_resampling() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
+        let resampled = resample::resample_by_distance(&pts, 2.0);
+        assert_eq!(resampled.len(), 6);
+        assert!((resampled[0].x - 0.0).abs() < 1e-4);
+        assert!((resampled[1].x - 2.0).abs() < 1e-4);
+        assert!((resampled[2].x - 4.0).abs() < 1e-4);
+        assert!((resampled[3].x - 6.0).abs() < 1e-4);
+        assert!((resampled[4].x - 8.0).abs() < 1e-4);
+        assert!((resampled[5].x - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_pressure_interpolation() {
+        let mut p1 = make_ink_point(0.0, 0.0);
+        p1.press = 0.2;
+        let mut p2 = make_ink_point(10.0, 0.0);
+        p2.press = 0.8;
+        let pts = vec![p1, p2];
+        let resampled = resample::resample_by_distance(&pts, 5.0);
+        assert_eq!(resampled.len(), 3);
+        assert!((resampled[1].press - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_pressure_filtering() {
+        let mut p1 = make_ink_point(0.0, 0.0);
+        p1.press = 0.5;
+        let mut p2 = make_ink_point(1.0, 0.0);
+        p2.press = 1.0;
+        let mut p3 = make_ink_point(2.0, 0.0);
+        p3.press = 0.5;
+        let mut pts = vec![p1, p2, p3];
+        smooth::filter_pressure(&mut pts, 0.3);
+        assert!(pts[1].press < 1.0);
+        assert!(pts[1].press > 0.5);
+        for pt in &pts {
+            assert!(pt.press >= 0.0 && pt.press <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_curve_generation() {
+        let pts = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(5.0, 5.0),
+            make_ink_point(10.0, 0.0),
+        ];
+        let spline = smooth::catmull_rom_spline(&pts, 4);
+        assert!(!spline.is_empty());
+        assert!((spline[0].x - 0.0).abs() < 1e-4);
+        assert!((spline[spline.len() - 1].x - 10.0).abs() < 1e-4);
+        for pt in &spline {
+            assert!(pt.x.is_finite());
+            assert!(pt.y.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_stroke_width() {
+        let brush = Brush::default_pen();
+        let w_zero = brush::stroke_w(&brush, 0.0);
+        assert_eq!(w_zero, 0.0);
+        let w_min = brush::stroke_w(&brush, 0.001);
+        assert!(w_min > 0.0);
+        let w_max = brush::stroke_w(&brush, 1.0);
+        assert!(w_max >= w_min);
+    }
+
+    #[test]
+    fn test_outline_geometry() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
+        let brush = Brush::default_pen();
+        let outline = geom::generate_stroke_outline(&pts, &brush).unwrap();
+        assert!(!outline.is_empty());
+        for p in &outline {
+            assert!(p.x.is_finite());
+            assert!(p.y.is_finite());
+        }
+        let bbox = geom::compute_outline_bbox(&outline).unwrap();
+        for p in &outline {
+            assert!(p.x >= bbox.min_x && p.x <= bbox.max_x);
+            assert!(p.y >= bbox.min_y && p.y <= bbox.max_y);
+        }
     }
 }

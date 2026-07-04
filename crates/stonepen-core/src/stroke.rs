@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::bbox::BBox;
 use crate::brush::Brush;
-use crate::geom::compute_bbox;
 use crate::ids::StrokeId;
 use crate::point::{InkPoint, PointerKind};
 use crate::smooth::smooth_pts;
@@ -78,7 +77,10 @@ impl StrokeBuilder {
 
         let deduped = crate::resample::dedup_pts(&self.raw_pts, 0.5);
         let resampled = crate::resample::resample_by_distance(&deduped, 2.0);
-        self.pts = smooth_pts(&resampled, self.brush.smooth);
+        let mut resampled_mut = resampled;
+        let alpha = (1.0 - self.brush.streamline).clamp(0.05, 0.95);
+        crate::smooth::filter_pressure(&mut resampled_mut, alpha);
+        self.pts = smooth_pts(&resampled_mut, self.brush.smooth);
     }
 
     pub fn preview_pts(&self) -> &[InkPoint] {
@@ -89,8 +91,8 @@ impl StrokeBuilder {
         if self.pts.is_empty() {
             return None;
         }
-        let half_w = self.brush.base_w * 0.5;
-        let local_bbox = compute_bbox(&self.pts, half_w)?;
+        let outline = crate::geom::generate_stroke_outline(&self.pts, &self.brush)?;
+        let local_bbox = crate::geom::compute_outline_bbox(&outline)?;
         let xform = Xform2D::identity();
         let world_bbox = xform.apply_bbox(local_bbox);
         Some(InkStroke {
