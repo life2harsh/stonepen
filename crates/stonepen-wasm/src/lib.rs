@@ -42,8 +42,44 @@ impl WasmApp {
         self.inner.on_wheel(&e);
     }
 
-    pub fn on_key(&mut self, e: KeyboardEvent) {
-        self.inner.on_key(&e);
+    pub fn on_key_down(&mut self, e: KeyboardEvent) {
+        self.inner.on_key_down(&e);
+    }
+
+    pub fn on_key_up(&mut self, e: KeyboardEvent) {
+        self.inner.on_key_up(&e);
+    }
+
+    pub fn on_blur(&mut self) {
+        self.inner.on_blur();
+    }
+
+    pub fn get_shortcuts_json(&self) -> String {
+        self.inner.get_shortcuts_json()
+    }
+
+    pub fn start_capture(&mut self, command_id: &str) {
+        self.inner.start_capture(command_id);
+    }
+
+    pub fn cancel_capture(&mut self) {
+        self.inner.cancel_capture();
+    }
+
+    pub fn is_capturing(&self) -> bool {
+        self.inner.is_capturing()
+    }
+
+    pub fn capturing_label(&self) -> String {
+        self.inner.capturing_label()
+    }
+
+    pub fn remove_shortcut_binding(&mut self, command_id: &str, index: usize) {
+        self.inner.remove_shortcut_binding(command_id, index);
+    }
+
+    pub fn reset_shortcuts_to_defaults(&mut self) {
+        self.inner.reset_shortcuts_to_defaults();
     }
 
     pub fn set_tool(&mut self, tool: &str) {

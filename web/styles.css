@@ -172,3 +172,235 @@ button:focus-visible {
   font-family: "Roboto Mono", "Fira Mono", ui-monospace, monospace;
   letter-spacing: 0.01em;
 }
+
+/* Modal Dialog Styles */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  align-items: center;
+  justify-content: center;
+}
+
+.modal.show {
+  display: flex;
+}
+
+.modal-content {
+  background-color: var(--bg);
+  border: 1px solid var(--toolbar-border);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 600px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+  animation: modal-fade-in 0.2s ease-out;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.modal-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--toolbar-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--toolbar-bg);
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
+}
+
+.modal-header h2 {
+  font-size: 16px;
+  color: var(--btn-text-active);
+  font-weight: 600;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--status-text);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.close-btn:hover {
+  color: var(--btn-text-active);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  position: relative;
+}
+
+.modal-body h3 {
+  font-size: 14px;
+  margin-bottom: 15px;
+  color: var(--btn-text-active);
+}
+
+#shortcuts-table-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 180px 1fr auto;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--toolbar-border);
+  border-radius: 4px;
+}
+
+.shortcut-label {
+  font-weight: 500;
+  color: var(--btn-text-active);
+}
+
+.shortcut-bindings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.shortcut-badge {
+  background: var(--btn-bg);
+  border: 1px solid var(--input-border);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--btn-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shortcut-badge-remove {
+  background: none;
+  border: none;
+  color: var(--status-text);
+  cursor: pointer;
+  font-weight: bold;
+  padding: 0 2px;
+  font-size: 10px;
+}
+
+.shortcut-badge-remove:hover {
+  color: #ff6b6b;
+}
+
+.shortcut-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.add-binding-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--input-border);
+  color: var(--btn-text);
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.add-binding-btn:hover {
+  background: var(--btn-hover);
+  color: var(--btn-text-active);
+}
+
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--toolbar-border);
+  display: flex;
+  justify-content: space-between;
+  background-color: var(--toolbar-bg);
+  border-bottom-left-radius: 7px;
+  border-bottom-right-radius: 7px;
+}
+
+.danger-btn {
+  background-color: #722c2c;
+  color: #ffc7c7;
+  border: 1px solid #944040;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.danger-btn:hover {
+  background-color: #8c3838;
+}
+
+.primary-btn {
+  background-color: var(--accent);
+  color: var(--btn-text-active);
+  border: 1px solid var(--accent-light);
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.primary-btn:hover {
+  background-color: var(--accent-light);
+}
+
+.capture-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  border-radius: 4px;
+}
+
+.capture-overlay.hidden {
+  display: none;
+}
+
+.capture-box {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 20px;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+.capture-box p {
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--btn-text-active);
+  margin-bottom: 8px;
+}
+
+.capture-box .capture-sub {
+  font-size: 11px;
+  color: var(--status-text);
+  font-weight: normal;
+}

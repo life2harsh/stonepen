@@ -1,3 +1,4 @@
+use serde::Serialize;
 use stonepen_core::bbox::BBox;
 use stonepen_core::brush::Brush;
 use stonepen_core::ids::{AssetId, ItemId, LayerId};
@@ -13,9 +14,16 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 
 use crate::canvas::{get_2d_context, get_canvas, sync_canvas_size};
 use crate::file_io::{trigger_download, trigger_png_download};
-use crate::keyboard::parse_key;
+use crate::keyboard::parse_event_to_chord;
 use crate::pointer::{get_inputs, PointerInput};
 use crate::render_2d::Renderer;
+use stonepen_core::shortcuts::{AppSettings, Command, ConflictError, KeyChord, ShortcutMap};
+
+#[derive(Debug, Clone)]
+pub struct TempPanState {
+    pub trigger_code: String,
+    pub released: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelHandle {
@@ -90,6 +98,9 @@ pub struct StonepenApp {
     dpr: f64,
     preview_pts: Vec<InkPoint>,
     lasso_preview: Vec<Point2>,
+    pub settings: AppSettings,
+    pub temp_pan: Option<TempPanState>,
+    pub capture_command: Option<Command>,
 }
 
 impl StonepenApp {
@@ -105,6 +116,23 @@ impl StonepenApp {
         vp.dpr = dpr as f32;
         let session = InkSession::new(css_w, css_h);
         let renderer = Renderer::new(ctx);
+        let mut settings = AppSettings::new();
+        if let Some(storage) = window.local_storage().ok().flatten() {
+            if let Some(json_str) = storage.get_item("stonepen.settings.v1").ok().flatten() {
+                match serde_json::from_str::<AppSettings>(&json_str) {
+                    Ok(mut loaded) => {
+                        loaded.validate_and_repair();
+                        settings = loaded;
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(&JsValue::from_str(&format!(
+                            "Malformed JSON in settings: {:?}",
+                            e
+                        )));
+                    }
+                }
+            }
+        }
         Ok(Self {
             canvas,
             renderer,
@@ -114,13 +142,16 @@ impl StonepenApp {
             dpr,
             preview_pts: Vec::new(),
             lasso_preview: Vec::new(),
+            settings,
+            temp_pan: None,
+            capture_command: None,
         })
     }
 
     pub fn on_pointer_down(&mut self, e: &PointerEvent) {
         e.prevent_default();
         let pi = PointerInput::from_event(e, &self.canvas);
-        match &self.session.active_tool {
+        match self.effective_tool() {
             Tool::Pen | Tool::Pencil | Tool::Highlighter => {
                 let draws = match pi.kind {
                     PointerKind::Pen => true,
@@ -555,7 +586,14 @@ impl StonepenApp {
                     }
                 }
             }
-            InputState::Panning { .. } => {}
+            InputState::Panning { .. } => {
+                if let Some(state) = &self.temp_pan {
+                    if state.released {
+                        self.temp_pan = None;
+                    }
+                }
+                self.refresh_cursor();
+            }
             InputState::Idle => {}
         }
         self.update_status();
@@ -595,11 +633,18 @@ impl StonepenApp {
                     }
                     self.session.doc.rebuild_runtime();
                 }
+                InputState::Panning { .. } => {
+                    if let Some(state) = &self.temp_pan {
+                        if state.released {
+                            self.temp_pan = None;
+                        }
+                    }
+                }
                 _ => {}
             }
             self.preview_pts.clear();
             self.lasso_preview.clear();
-            self.update_cursor("default");
+            self.refresh_cursor();
             self.redraw();
         }
     }
@@ -615,56 +660,206 @@ impl StonepenApp {
         self.redraw();
     }
 
-    pub fn on_key(&mut self, e: &KeyboardEvent) {
-        let action = parse_key(e);
-        if action.undo || action.redo || action.delete || action.escape || action.duplicate {
+    pub fn on_key_down(&mut self, e: &KeyboardEvent) {
+        let chord = parse_event_to_chord(e);
+        if let Some(cmd_to_capture) = self.capture_command {
             e.prevent_default();
+            if chord.code == "Escape" {
+                self.capture_command = None;
+                self.notify_js_shortcut_update();
+                return;
+            }
+            if chord.is_modifier_only() {
+                return;
+            }
+            match self
+                .settings
+                .shortcuts
+                .add_binding(cmd_to_capture, chord.clone())
+            {
+                Ok(_) => {
+                    self.capture_command = None;
+                    self.save_settings();
+                    self.notify_js_shortcut_update();
+                }
+                Err(ConflictError::Conflict(other_cmd)) => {
+                    self.show_conflict_message(cmd_to_capture, other_cmd);
+                }
+                Err(ConflictError::ModifierOnly) => {}
+            }
+            return;
         }
-        if action.undo {
-            self.session.undo();
-        } else if action.redo {
-            self.session.redo();
-        } else if action.delete {
-            self.session.delete_sel();
-        } else if action.escape {
-            if matches!(self.input, InputState::MarqueeSelecting { .. }) {
-                self.input = InputState::Idle;
-                self.update_cursor("default");
+
+        if let Some(cmd) = self.settings.shortcuts.command_for_chord(&chord) {
+            e.prevent_default();
+            if e.repeat() {
+                return;
+            }
+            if cmd == Command::HoldPan {
+                if matches!(self.input, InputState::Idle) {
+                    self.temp_pan = Some(TempPanState {
+                        trigger_code: chord.code.clone(),
+                        released: false,
+                    });
+                    self.refresh_cursor();
+                    self.update_status();
+                    self.redraw();
+                }
             } else {
-                self.session.doc.clear_sel();
-                self.lasso_preview.clear();
-                if matches!(self.input, InputState::Lassoing { .. }) {
-                    self.input = InputState::Idle;
+                if matches!(self.input, InputState::Idle)
+                    || cmd == Command::Undo
+                    || cmd == Command::Redo
+                    || cmd == Command::ClearSelection
+                {
+                    self.dispatch_command(cmd);
                 }
             }
-        } else if action.duplicate {
-            self.session.duplicate_sel();
         }
+    }
+
+    pub fn on_key_up(&mut self, e: &KeyboardEvent) {
+        let code = e.code();
+        if let Some(state) = &mut self.temp_pan {
+            if state.trigger_code == code {
+                state.released = true;
+                if !matches!(self.input, InputState::Panning { .. }) {
+                    self.temp_pan = None;
+                    self.refresh_cursor();
+                    self.update_status();
+                    self.redraw();
+                }
+            }
+        }
+    }
+
+    pub fn on_blur(&mut self) {
+        self.temp_pan = None;
+        self.refresh_cursor();
         self.update_status();
         self.redraw();
     }
 
     pub fn set_tool(&mut self, tool: &str) {
-        self.session.active_tool = match tool {
-            "pen" => {
-                self.session.active_brush = Brush::default_pen();
-                Tool::Pen
-            }
-            "pencil" => {
-                self.session.active_brush = Brush::default_pencil();
-                Tool::Pencil
-            }
-            "highlighter" => {
-                self.session.active_brush = Brush::default_highlighter();
-                Tool::Highlighter
-            }
-            "eraser" => Tool::StrokeEraser,
-            "lasso" => Tool::Lasso,
-            "pan" => Tool::Pan,
-            "select" => Tool::Select,
-            _ => Tool::Pen,
+        let cmd = match tool {
+            "pen" => Command::ToolPen,
+            "pencil" => Command::ToolPencil,
+            "highlighter" => Command::ToolHighlighter,
+            "eraser" => Command::ToolEraser,
+            "lasso" => Command::ToolLasso,
+            "select" => Command::ToolSelect,
+            "pan" => Command::ToolPan,
+            _ => return,
         };
-        self.update_status();
+        self.dispatch_command(cmd);
+    }
+
+    fn save_settings(&self) {
+        if let Some(window) = web_sys::window() {
+            if let Some(storage) = window.local_storage().ok().flatten() {
+                if let Ok(json) = serde_json::to_string(&self.settings) {
+                    let _ = storage.set_item("stonepen.settings.v1", &json);
+                }
+            }
+        }
+    }
+
+    fn notify_js_shortcut_update(&self) {
+        if let Some(window) = web_sys::window() {
+            let event = web_sys::Event::new("shortcuts-updated").unwrap();
+            let _ = window.dispatch_event(&event);
+        }
+    }
+
+    fn show_conflict_message(&self, _cmd: Command, other: Command) {
+        if let Some(window) = web_sys::window() {
+            let msg = format!("Already used by {}", other.label());
+            let init = web_sys::CustomEventInit::new();
+            init.set_detail(&JsValue::from_str(&msg));
+            let custom_event = web_sys::CustomEvent::new_with_event_init_dict(
+                "shortcut-conflict",
+                &init,
+            )
+            .unwrap();
+            let _ = window.dispatch_event(&custom_event);
+        }
+    }
+
+    pub fn get_shortcuts_json(&self) -> String {
+        let mut rows = Vec::new();
+        let commands = [
+            Command::ToolPen,
+            Command::ToolPencil,
+            Command::ToolHighlighter,
+            Command::ToolEraser,
+            Command::ToolLasso,
+            Command::ToolSelect,
+            Command::ToolPan,
+            Command::Undo,
+            Command::Redo,
+            Command::DeleteSelection,
+            Command::DuplicateSelection,
+            Command::ClearSelection,
+            Command::HoldPan,
+        ];
+        #[derive(Serialize)]
+        struct ShortcutRow {
+            command_id: &'static str,
+            label: &'static str,
+            bindings: Vec<String>,
+            chords: Vec<KeyChord>,
+        }
+        for cmd in &commands {
+            let chords = self.settings.shortcuts.bindings(*cmd);
+            let bindings_str = chords.iter().map(|c| c.to_display_string()).collect();
+            rows.push(ShortcutRow {
+                command_id: cmd.to_id(),
+                label: cmd.label(),
+                bindings: bindings_str,
+                chords: chords.to_vec(),
+            });
+        }
+        serde_json::to_string(&rows).unwrap_or_default()
+    }
+
+    pub fn start_capture(&mut self, command_id: &str) {
+        if let Some(cmd) = Command::from_id(command_id) {
+            self.capture_command = Some(cmd);
+            self.notify_js_shortcut_update();
+        }
+    }
+
+    pub fn cancel_capture(&mut self) {
+        self.capture_command = None;
+        self.notify_js_shortcut_update();
+    }
+
+    pub fn is_capturing(&self) -> bool {
+        self.capture_command.is_some()
+    }
+
+    pub fn capturing_label(&self) -> String {
+        self.capture_command
+            .map(|c| c.label().to_string())
+            .unwrap_or_default()
+    }
+
+    pub fn remove_shortcut_binding(&mut self, command_id: &str, index: usize) {
+        if let Some(cmd) = Command::from_id(command_id) {
+            let bindings = self.settings.shortcuts.bindings(cmd);
+            if index < bindings.len() {
+                let chord = bindings[index].clone();
+                self.settings.shortcuts.remove_binding(cmd, &chord);
+                self.save_settings();
+                self.notify_js_shortcut_update();
+            }
+        }
+    }
+
+    pub fn reset_shortcuts_to_defaults(&mut self) {
+        self.settings.shortcuts = ShortcutMap::defaults();
+        self.save_settings();
+        self.notify_js_shortcut_update();
+        self.redraw();
     }
 
     pub fn set_brush_color(&mut self, r: u8, g: u8, b: u8) {
@@ -756,6 +951,156 @@ impl StonepenApp {
                 }
             }
         }
+    }
+
+    pub fn effective_tool(&self) -> Tool {
+        if self.temp_pan.is_some() {
+            Tool::Pan
+        } else {
+            self.session.active_tool.clone()
+        }
+    }
+
+    pub fn refresh_cursor(&self) {
+        if self.temp_pan.is_some() {
+            if matches!(self.input, InputState::Panning { .. }) {
+                self.update_cursor("grabbing");
+            } else {
+                self.update_cursor("grab");
+            }
+            return;
+        }
+        match &self.input {
+            InputState::Idle => match self.effective_tool() {
+                Tool::Pan => self.update_cursor("grab"),
+                Tool::Select => self.update_cursor("default"),
+                _ => self.update_cursor("default"),
+            },
+            InputState::Panning { .. } => {
+                self.update_cursor("grabbing");
+            }
+            InputState::MovingSel { .. } => {
+                self.update_cursor("grabbing");
+            }
+            InputState::ScalingSel { .. } => {}
+            InputState::RotatingSel { .. } => {
+                self.update_cursor("grabbing");
+            }
+            InputState::MarqueeSelecting { active: true, .. } => {
+                self.update_cursor("crosshair");
+            }
+            InputState::MarqueeSelecting { active: false, .. } => {
+                self.update_cursor("default");
+            }
+            _ => {
+                self.update_cursor("default");
+            }
+        }
+    }
+
+    pub fn dispatch_command(&mut self, cmd: Command) {
+        if self.capture_command.is_some() {
+            return;
+        }
+        match cmd {
+            Command::ToolPen => {
+                self.session.active_brush = Brush::default_pen();
+                self.session.active_tool = Tool::Pen;
+                self.sync_tool_ui("pen");
+            }
+            Command::ToolPencil => {
+                self.session.active_brush = Brush::default_pencil();
+                self.session.active_tool = Tool::Pencil;
+                self.sync_tool_ui("pencil");
+            }
+            Command::ToolHighlighter => {
+                self.session.active_brush = Brush::default_highlighter();
+                self.session.active_tool = Tool::Highlighter;
+                self.sync_tool_ui("highlighter");
+            }
+            Command::ToolEraser => {
+                self.session.active_tool = Tool::StrokeEraser;
+                self.sync_tool_ui("eraser");
+            }
+            Command::ToolLasso => {
+                self.session.active_tool = Tool::Lasso;
+                self.sync_tool_ui("lasso");
+            }
+            Command::ToolSelect => {
+                self.session.active_tool = Tool::Select;
+                self.sync_tool_ui("select");
+            }
+            Command::ToolPan => {
+                self.session.active_tool = Tool::Pan;
+                self.sync_tool_ui("pan");
+            }
+            Command::Undo => {
+                self.session.undo();
+            }
+            Command::Redo => {
+                self.session.redo();
+            }
+            Command::DeleteSelection => {
+                self.session.delete_sel();
+            }
+            Command::DuplicateSelection => {
+                self.session.duplicate_sel();
+            }
+            Command::ClearSelection => {
+                if matches!(self.input, InputState::MarqueeSelecting { .. }) {
+                    self.input = InputState::Idle;
+                    self.refresh_cursor();
+                } else if matches!(self.input, InputState::Lassoing { .. }) {
+                    self.input = InputState::Idle;
+                    self.lasso_preview.clear();
+                    self.refresh_cursor();
+                } else {
+                    self.session.doc.clear_sel();
+                }
+            }
+            Command::HoldPan => {}
+        }
+        self.update_status();
+        self.redraw();
+    }
+
+    fn sync_tool_ui(&self, active_tool_name: &str) {
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                let btns = [
+                    "pen",
+                    "pencil",
+                    "highlighter",
+                    "eraser",
+                    "lasso",
+                    "pan",
+                    "select",
+                ];
+                for btn_name in btns {
+                    let id = format!("btn-{}", btn_name);
+                    if let Some(el) = document.get_element_by_id(&id) {
+                        if btn_name == active_tool_name {
+                            let _ = el.class_list().add_1("active");
+                        } else {
+                            let _ = el.class_list().remove_1("active");
+                        }
+                    }
+                }
+                if let Some(canvas) = document.get_element_by_id("ink-canvas") {
+                    let _ = canvas.set_class_name("");
+                    if active_tool_name == "pan" {
+                        let _ = canvas.class_list().add_1("tool-pan");
+                    } else if active_tool_name == "eraser" {
+                        let _ = canvas.class_list().add_1("tool-eraser");
+                    } else if active_tool_name == "lasso" {
+                        let _ = canvas.class_list().add_1("tool-lasso");
+                    } else if active_tool_name == "select" {
+                        let _ = canvas.class_list().add_1("tool-select");
+                    }
+                }
+            }
+        }
+        self.refresh_cursor();
     }
 
     pub fn selection_hit_test(&self, screen_pt: Point2) -> (SelHit, Point2) {

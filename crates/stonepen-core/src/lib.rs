@@ -15,6 +15,7 @@ pub mod resample;
 pub mod runtime;
 pub mod sel;
 pub mod session;
+pub mod shortcuts;
 pub mod smooth;
 pub mod spatial;
 pub mod stroke;
@@ -36,6 +37,7 @@ pub use point::{InkPoint, Point2, PointerKind, Vec2};
 pub use runtime::InkRuntime;
 pub use sel::select_rect;
 pub use session::{InkError, InkSession, Tool};
+pub use shortcuts::{AppSettings, Command, ConflictError, KeyChord, ShortcutMap};
 pub use smooth::adaptive_catmull_rom;
 pub use stroke::{InkStroke, StrokeBuilder};
 pub use viewport::Viewport;
@@ -1985,5 +1987,215 @@ mod tests {
         let roots_child = doc.transform_roots();
         assert!(!roots_child.contains(&img_id));
         assert!(roots_child.contains(&stroke_id.into()));
+    }
+
+    #[test]
+    fn test_shortcuts_default_map_no_conflicts() {
+        let sm = ShortcutMap::defaults();
+        // Ensure no overlapping chords
+        let mut seen = std::collections::HashSet::new();
+        for (cmd, chords) in &sm.map {
+            for chord in chords {
+                assert!(
+                    seen.insert(chord.clone()),
+                    "Duplicate chord: {:?} for {:?}",
+                    chord,
+                    cmd
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_shortcuts_resolutions() {
+        let sm = ShortcutMap::defaults();
+
+        // Primary+Z resolves Undo
+        assert_eq!(
+            sm.command_for_chord(&KeyChord::primary("KeyZ")),
+            Some(Command::Undo)
+        );
+
+        // Primary+Shift+Z resolves Redo
+        assert_eq!(
+            sm.command_for_chord(&KeyChord::primary_shift("KeyZ")),
+            Some(Command::Redo)
+        );
+
+        // Primary+Y resolves Redo
+        assert_eq!(
+            sm.command_for_chord(&KeyChord::primary("KeyY")),
+            Some(Command::Redo)
+        );
+
+        // Delete and Backspace both resolve DeleteSelection
+        assert_eq!(
+            sm.command_for_chord(&KeyChord::simple("Delete")),
+            Some(Command::DeleteSelection)
+        );
+        assert_eq!(
+            sm.command_for_chord(&KeyChord::simple("Backspace")),
+            Some(Command::DeleteSelection)
+        );
+    }
+
+    #[test]
+    fn test_shortcuts_multiple_bindings_and_removal() {
+        let mut sm = ShortcutMap::new();
+        assert!(sm
+            .add_binding(Command::Undo, KeyChord::simple("KeyU"))
+            .is_ok());
+        assert!(sm
+            .add_binding(Command::Undo, KeyChord::simple("KeyZ"))
+            .is_ok());
+
+        let bindings = sm.bindings(Command::Undo);
+        assert_eq!(bindings.len(), 2);
+
+        // Remove one binding, other remains
+        assert!(sm.remove_binding(Command::Undo, &KeyChord::simple("KeyU")));
+        let bindings_after = sm.bindings(Command::Undo);
+        assert_eq!(bindings_after.len(), 1);
+        assert_eq!(bindings_after[0].code, "KeyZ");
+    }
+
+    #[test]
+    fn test_shortcuts_duplicate_conflict_detected() {
+        let mut sm = ShortcutMap::new();
+        assert!(sm
+            .add_binding(Command::Undo, KeyChord::simple("KeyZ"))
+            .is_ok());
+
+        // Attempting to assign same chord to Redo should fail and return conflict
+        let res = sm.add_binding(Command::Redo, KeyChord::simple("KeyZ"));
+        assert_eq!(res, Err(ConflictError::Conflict(Command::Undo)));
+    }
+
+    #[test]
+    fn test_shortcuts_modifier_only_rejected() {
+        let mut sm = ShortcutMap::new();
+        let res = sm.add_binding(Command::Undo, KeyChord::simple("ControlLeft"));
+        assert_eq!(res, Err(ConflictError::ModifierOnly));
+    }
+
+    #[test]
+    fn test_shortcuts_settings_json_round_trip() {
+        let mut settings = AppSettings::new();
+        // Modify a binding to check persistence
+        settings.shortcuts.map.clear();
+        settings
+            .shortcuts
+            .add_binding(Command::Undo, KeyChord::simple("KeyX"))
+            .unwrap();
+
+        let json = serde_json::to_string(&settings).unwrap();
+        let deserialized: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, settings);
+
+        // Verify command string IDs are stable
+        assert!(json.contains("\"undo\""));
+        assert!(!json.contains("\"Undo\""));
+    }
+
+    #[test]
+    fn test_shortcuts_validation_and_repair() {
+        let mut settings = AppSettings::new();
+        // Introduce conflict and modifier-only manually to map
+        settings.shortcuts.map.insert(
+            Command::Undo,
+            vec![
+                KeyChord::simple("KeyZ"),
+                KeyChord::simple("ControlLeft"), // invalid modifier only
+            ],
+        );
+        settings.shortcuts.map.insert(
+            Command::Redo,
+            vec![
+                KeyChord::simple("KeyZ"), // conflicting with Undo
+            ],
+        );
+
+        settings.validate_and_repair();
+
+        // Verify only clean bindings remain
+        let undo_chords = settings.shortcuts.bindings(Command::Undo);
+        assert_eq!(undo_chords.len(), 1);
+        assert_eq!(undo_chords[0], KeyChord::simple("KeyZ"));
+
+        let redo_chords = settings.shortcuts.bindings(Command::Redo);
+        assert!(
+            redo_chords.is_empty(),
+            "Redo conflict should have been cleaned"
+        );
+    }
+
+    #[test]
+    fn test_shortcuts_temp_pan_state_transitions() {
+        struct MockApp {
+            active_tool: Tool,
+            temp_pan_active: bool,
+            temp_pan_released: bool,
+            input_idle: bool,
+        }
+        impl MockApp {
+            fn effective_tool(&self) -> Tool {
+                if self.temp_pan_active {
+                    Tool::Pan
+                } else {
+                    self.active_tool.clone()
+                }
+            }
+            fn on_space_keydown(&mut self) {
+                if self.input_idle {
+                    self.temp_pan_active = true;
+                    self.temp_pan_released = false;
+                }
+            }
+            fn on_space_keyup(&mut self) {
+                if self.temp_pan_active {
+                    self.temp_pan_released = true;
+                    if self.input_idle {
+                        self.temp_pan_active = false;
+                    }
+                }
+            }
+            fn on_drag_start(&mut self) {
+                self.input_idle = false;
+            }
+            fn on_drag_end(&mut self) {
+                self.input_idle = true;
+                if self.temp_pan_released {
+                    self.temp_pan_active = false;
+                }
+            }
+        }
+
+        let mut app = MockApp {
+            active_tool: Tool::Pen,
+            temp_pan_active: false,
+            temp_pan_released: false,
+            input_idle: true,
+        };
+
+        app.on_space_keydown();
+        assert_eq!(app.effective_tool(), Tool::Pan);
+        assert_eq!(app.active_tool, Tool::Pen);
+
+        app.on_space_keyup();
+        assert_eq!(app.effective_tool(), Tool::Pen);
+
+        app.active_tool = Tool::Pen;
+        app.on_drag_start();
+        app.on_space_keydown();
+        assert_eq!(app.effective_tool(), Tool::Pen);
+        app.on_drag_end();
+
+        app.on_space_keydown();
+        assert_eq!(app.effective_tool(), Tool::Pan);
+        app.on_drag_start();
+        app.on_space_keyup();
+        assert_eq!(app.effective_tool(), Tool::Pan);
+        app.on_drag_end();
+        assert_eq!(app.effective_tool(), Tool::Pen);
     }
 }

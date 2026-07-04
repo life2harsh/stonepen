@@ -34,6 +34,7 @@
         <input id="load-input" type="file" accept=".json" style="display:none">
         <button id="btn-export-svg">Export SVG</button>
         <button id="btn-export-png">Export PNG</button>
+        <button id="btn-settings">Settings</button>
       </div>
     </header>
     <main id="canvas-container">
@@ -41,6 +42,30 @@
     </main>
     <footer id="status-bar">strokes: 0  selected: 0  tool: Pen  zoom: 100%  saved</footer>
   </div>
+
+  <div id="settings-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="btn-settings-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <h3>Keyboard Shortcuts</h3>
+        <div id="shortcuts-table-container"></div>
+        <div id="capture-overlay" class="capture-overlay hidden">
+          <div class="capture-box">
+            <p>Press shortcut chord for <span id="capture-cmd-name">Command</span>...</p>
+            <p class="capture-sub">Escape to cancel</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-settings-reset" class="danger-btn">Reset to Defaults</button>
+        <button id="btn-settings-close-footer" class="primary-btn">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="main.js"></script>
 </body>
 </html>

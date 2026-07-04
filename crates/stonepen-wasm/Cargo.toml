@@ -11,6 +11,8 @@ stonepen-core = { path = "../stonepen-core" }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 
 [dependencies.web-sys]
 version = "0.3"
@@ -20,8 +22,11 @@ features = [
   "CanvasRenderingContext2d",
   "console",
   "CssStyleDeclaration",
+  "CustomEvent",
+  "CustomEventInit",
   "Document",
   "DomRect",
+  "DomTokenList",
   "Element",
   "EventTarget",
   "File",
@@ -34,6 +39,7 @@ features = [
   "KeyboardEvent",
   "MouseEvent",
   "PointerEvent",
+  "Storage",
   "TouchEvent",
   "Url",
   "WheelEvent",
