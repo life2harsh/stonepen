@@ -402,23 +402,11 @@ impl Renderer {
     }
 
     fn draw_selection_overlay(&self, session: &InkSession, vp: &Viewport) {
-        let bbox = match session.doc.selection_bbox() {
-            Some(b) => b,
-            None => return,
-        };
-        let tl = vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
-        let br = vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
-        let x = tl.x as f64;
-        let y = tl.y as f64;
-        let w = (br.x - tl.x) as f64;
-        let h = (br.y - tl.y) as f64;
+        let sel = &session.doc.runtime.sel_items;
+        if sel.is_empty() {
+            return;
+        }
 
-        // Draw bounding box
-        self.ctx.set_stroke_style_str("rgba(60,120,220,0.85)");
-        self.ctx.set_line_width(1.5);
-        self.ctx.stroke_rect(x, y, w, h);
-
-        // Draw handles in screen space
         self.ctx.set_fill_style_str("#ffffff");
         self.ctx.set_stroke_style_str("#3b78dc");
         self.ctx.set_line_width(2.0);
@@ -432,22 +420,99 @@ impl Renderer {
                 .stroke_rect(cx - h_half, cy - h_half, h_size, h_size);
         };
 
-        draw_corner(x, y);
-        draw_corner(x + w, y);
-        draw_corner(x + w, y + h);
-        draw_corner(x, y + h);
+        let mut single_image = None;
+        if sel.len() == 1 {
+            let id = *sel.iter().next().unwrap();
+            if let Some(InkItem::Image(img)) = session.doc.get_item(id) {
+                single_image = Some(img);
+            }
+        }
 
-        // Draw rotation handle
-        let rx = x + w * 0.5;
-        let ry = y - 25.0;
-        self.ctx.begin_path();
-        self.ctx.move_to(rx, y);
-        self.ctx.line_to(rx, ry);
-        self.ctx.stroke();
+        if let Some(img) = single_image {
+            let w = img.width;
+            let h = img.height;
+            let corners = [
+                Point2::new(0.0, 0.0),
+                Point2::new(w, 0.0),
+                Point2::new(w, h),
+                Point2::new(0.0, h),
+            ];
+            let sc: Vec<Point2> = corners
+                .iter()
+                .map(|&p| vp.world_to_screen(img.xform.apply(p)))
+                .collect();
 
-        self.ctx.begin_path();
-        let _ = self.ctx.arc(rx, ry, 5.0, 0.0, std::f64::consts::TAU);
-        self.ctx.fill();
-        self.ctx.stroke();
+            self.ctx.set_stroke_style_str("rgba(60,120,220,0.85)");
+            self.ctx.set_line_width(1.5);
+            self.ctx.begin_path();
+            self.ctx.move_to(sc[0].x as f64, sc[0].y as f64);
+            self.ctx.line_to(sc[1].x as f64, sc[1].y as f64);
+            self.ctx.line_to(sc[2].x as f64, sc[2].y as f64);
+            self.ctx.line_to(sc[3].x as f64, sc[3].y as f64);
+            self.ctx.close_path();
+            self.ctx.stroke();
+
+            self.ctx.set_stroke_style_str("#3b78dc");
+            self.ctx.set_line_width(2.0);
+            for p in &sc {
+                draw_corner(p.x as f64, p.y as f64);
+            }
+
+            let top_mid = Point2::new((sc[0].x + sc[1].x) * 0.5, (sc[0].y + sc[1].y) * 0.5);
+            let dx = sc[1].x - sc[0].x;
+            let dy = sc[1].y - sc[0].y;
+            let len = (dx * dx + dy * dy).sqrt();
+            let (nx, ny) = if len > 1e-4 {
+                (dy / len, -dx / len)
+            } else {
+                (0.0, -1.0)
+            };
+            let rx = top_mid.x + nx * 25.0;
+            let ry = top_mid.y + ny * 25.0;
+
+            self.ctx.begin_path();
+            self.ctx.move_to(top_mid.x as f64, top_mid.y as f64);
+            self.ctx.line_to(rx as f64, ry as f64);
+            self.ctx.stroke();
+
+            self.ctx.begin_path();
+            let _ = self
+                .ctx
+                .arc(rx as f64, ry as f64, 5.0, 0.0, std::f64::consts::TAU);
+            self.ctx.fill();
+            self.ctx.stroke();
+        } else {
+            if let Some(bbox) = session.doc.selection_bbox() {
+                let tl = vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
+                let br = vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
+                let x = tl.x as f64;
+                let y = tl.y as f64;
+                let w = (br.x - tl.x) as f64;
+                let h = (br.y - tl.y) as f64;
+
+                self.ctx.set_stroke_style_str("rgba(60,120,220,0.85)");
+                self.ctx.set_line_width(1.5);
+                self.ctx.stroke_rect(x, y, w, h);
+
+                self.ctx.set_stroke_style_str("#3b78dc");
+                self.ctx.set_line_width(2.0);
+                draw_corner(x, y);
+                draw_corner(x + w, y);
+                draw_corner(x + w, y + h);
+                draw_corner(x, y + h);
+
+                let rx = x + w * 0.5;
+                let ry = y - 25.0;
+                self.ctx.begin_path();
+                self.ctx.move_to(rx, y);
+                self.ctx.line_to(rx, ry);
+                self.ctx.stroke();
+
+                self.ctx.begin_path();
+                let _ = self.ctx.arc(rx, ry, 5.0, 0.0, std::f64::consts::TAU);
+                self.ctx.fill();
+                self.ctx.stroke();
+            }
+        }
     }
 }

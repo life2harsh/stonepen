@@ -60,7 +60,7 @@ impl InkDoc {
         let layer = InkLayer::new("Layer 1");
         let active_layer_id = layer.id;
         let mut doc = Self {
-            schema_version: 2,
+            schema_version: 3,
             id: DocId::new(),
             width,
             height,
@@ -125,6 +125,9 @@ impl InkDoc {
             }
         }
         self.runtime.item_idx = rstar::RTree::bulk_load(entries);
+        self.runtime
+            .sel_items
+            .retain(|id| self.runtime.item_pos.contains_key(id));
     }
 
     pub fn active_layer(&self) -> Option<&InkLayer> {
@@ -192,6 +195,94 @@ impl InkDoc {
             }
         }
         kids
+    }
+    pub fn transform_roots(&self) -> std::collections::HashSet<ItemId> {
+        let sel = &self.runtime.sel_items;
+        let mut roots = std::collections::HashSet::new();
+        for &id in sel {
+            let mut is_root = true;
+            if let Some(item) = self.get_item(id) {
+                if let InkItem::Stroke(s) = item {
+                    if let Some(pid) = s.parent_id {
+                        if sel.contains(&pid) {
+                            is_root = false;
+                        }
+                    }
+                }
+            }
+            if is_root {
+                roots.insert(id);
+            }
+        }
+        roots
+    }
+
+    pub fn selection_closure(&self) -> std::collections::HashSet<ItemId> {
+        let mut closure = self.runtime.sel_items.clone();
+        for &id in &self.runtime.sel_items {
+            if let Some(item) = self.get_item(id) {
+                if let InkItem::Image(img) = item {
+                    for kid in self.attached_strokes(img.id) {
+                        closure.insert(kid);
+                    }
+                }
+            }
+        }
+        closure
+    }
+
+    pub fn annotation_target_image(&self) -> Option<ItemId> {
+        let roots = self.transform_roots();
+        if roots.len() == 1 {
+            let root_id = *roots.iter().next().unwrap();
+            if let Some(InkItem::Image(_)) = self.get_item(root_id) {
+                return Some(root_id);
+            }
+        }
+        None
+    }
+
+    pub fn apply_world_xform_to_item(
+        &mut self,
+        id: ItemId,
+        world_xf: Xform2D,
+        orig_local_xf: Xform2D,
+    ) {
+        let parent_id = if let Some(InkItem::Stroke(s)) = self.get_item(id) {
+            s.parent_id
+        } else {
+            None
+        };
+
+        if let Some(pid) = parent_id {
+            let parent_xform = if let Some(parent_item) = self.get_item(pid) {
+                parent_item.xform()
+            } else {
+                Xform2D::identity()
+            };
+            if let Some(inv) = parent_xform.inverse() {
+                if let Some(InkItem::Stroke(s)) = self.get_item_mut(id) {
+                    s.xform = inv
+                        .concat(world_xf)
+                        .concat(parent_xform)
+                        .concat(orig_local_xf);
+                    s.recompute_world_bbox();
+                }
+            }
+        } else {
+            if let Some(item) = self.get_item_mut(id) {
+                match item {
+                    InkItem::Image(img) => {
+                        img.xform = world_xf.concat(orig_local_xf);
+                        img.recompute_world_bbox();
+                    }
+                    InkItem::Stroke(s) => {
+                        s.xform = world_xf.concat(orig_local_xf);
+                        s.recompute_world_bbox();
+                    }
+                }
+            }
+        }
     }
 
     pub fn add_stroke(&mut self, layer_id: LayerId, stroke: InkStroke) {

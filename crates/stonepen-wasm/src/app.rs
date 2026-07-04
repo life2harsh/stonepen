@@ -23,6 +23,13 @@ pub enum SelHandle {
     TopRight,
     BottomRight,
     BottomLeft,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelHit {
+    None,
+    Move,
+    Scale(SelHandle),
     Rotate,
 }
 
@@ -113,15 +120,16 @@ impl StonepenApp {
                     _ => false,
                 };
                 if draws {
-                    let mut parent_id = None;
-                    let mut parent_xform_inv = None;
-                    if self.session.doc.runtime.sel_items.len() == 1 {
-                        let sel_id = *self.session.doc.runtime.sel_items.iter().next().unwrap();
-                        if let Some(InkItem::Image(img)) = self.session.doc.get_item(sel_id) {
-                            parent_id = Some(img.id);
-                            parent_xform_inv = img.xform.inverse();
+                    let parent_id = self.session.doc.annotation_target_image();
+                    let parent_xform_inv = if let Some(pid) = parent_id {
+                        if let Some(InkItem::Image(img)) = self.session.doc.get_item(pid) {
+                            img.xform.inverse()
+                        } else {
+                            None
                         }
-                    }
+                    } else {
+                        None
+                    };
 
                     let brush = self.session.active_brush.clone();
                     let mut builder = StrokeBuilder::new(brush);
@@ -166,77 +174,32 @@ impl StonepenApp {
             }
             Tool::Select => {
                 let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
-                let sel: Vec<ItemId> = self.session.doc.runtime.sel_items.iter().copied().collect();
-
-                let mut hit_handle_enum: Option<SelHandle> = None;
-                let mut handle_pivot = Point2::new(0.0, 0.0);
+                let (hit, handle_pivot) = self.selection_hit_test(Point2::new(pi.x, pi.y));
                 let start_world = world_pos;
 
-                if let Some(bbox) = self.session.doc.selection_bbox() {
-                    let tl = self.vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
-                    let br = self.vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
-                    let x = tl.x;
-                    let y = tl.y;
-                    let w = br.x - tl.x;
-                    let h = br.y - tl.y;
-
-                    let handle_radius = 12.0f32;
-                    let hit_handle = |hx: f32, hy: f32| -> bool {
-                        let dx = pi.x - hx;
-                        let dy = pi.y - hy;
-                        dx * dx + dy * dy <= handle_radius * handle_radius
-                    };
-
-                    if hit_handle(x, y) {
-                        hit_handle_enum = Some(SelHandle::TopLeft);
-                        handle_pivot = Point2::new(bbox.max_x, bbox.max_y);
-                    } else if hit_handle(x + w, y) {
-                        hit_handle_enum = Some(SelHandle::TopRight);
-                        handle_pivot = Point2::new(bbox.min_x, bbox.max_y);
-                    } else if hit_handle(x + w, y + h) {
-                        hit_handle_enum = Some(SelHandle::BottomRight);
-                        handle_pivot = Point2::new(bbox.min_x, bbox.min_y);
-                    } else if hit_handle(x, y + h) {
-                        hit_handle_enum = Some(SelHandle::BottomLeft);
-                        handle_pivot = Point2::new(bbox.max_x, bbox.min_y);
-                    } else if hit_handle(x + w * 0.5, y - 25.0) {
-                        hit_handle_enum = Some(SelHandle::Rotate);
-                        handle_pivot = Point2::new(
-                            (bbox.min_x + bbox.max_x) * 0.5,
-                            (bbox.min_y + bbox.max_y) * 0.5,
-                        );
-                    }
-                }
-
-                if let Some(handle) = hit_handle_enum {
-                    let mut roots = Vec::new();
-                    for &id in &sel {
-                        let mut is_root = true;
-                        if let Some(InkItem::Stroke(s)) = self.session.doc.get_item(id) {
-                            if let Some(pid) = s.parent_id {
-                                if sel.contains(&pid) {
-                                    is_root = false;
-                                }
-                            }
-                        }
-                        if is_root {
-                            roots.push(id);
-                        }
-                    }
-                    let before = roots
-                        .iter()
-                        .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
-                        .collect();
-                    if handle == SelHandle::Rotate {
+                match hit {
+                    SelHit::Rotate => {
+                        let roots = self.session.doc.transform_roots();
+                        let before = roots
+                            .iter()
+                            .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                            .collect();
                         let d = world_pos - handle_pivot;
                         let start_angle = d.y.atan2(d.x);
+                        self.update_cursor("grabbing");
                         self.input = InputState::RotatingSel {
                             ptr_id: pi.id,
                             pivot: handle_pivot,
                             start_angle,
                             before,
                         };
-                    } else {
+                    }
+                    SelHit::Scale(_handle) => {
+                        let roots = self.session.doc.transform_roots();
+                        let before = roots
+                            .iter()
+                            .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                            .collect();
                         self.input = InputState::ScalingSel {
                             ptr_id: pi.id,
                             pivot: handle_pivot,
@@ -244,46 +207,51 @@ impl StonepenApp {
                             before,
                         };
                     }
-                } else {
-                    let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
-                    if let Some(id) = clicked {
-                        if self.session.doc.runtime.sel_items.contains(&id) {
-                            let mut roots = Vec::new();
-                            for &id in &sel {
-                                let mut is_root = true;
-                                if let Some(InkItem::Stroke(s)) = self.session.doc.get_item(id) {
-                                    if let Some(pid) = s.parent_id {
-                                        if sel.contains(&pid) {
-                                            is_root = false;
-                                        }
-                                    }
-                                }
-                                if is_root {
-                                    roots.push(id);
-                                }
+                    SelHit::Move => {
+                        let roots = self.session.doc.transform_roots();
+                        let before = roots
+                            .iter()
+                            .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                            .collect();
+                        self.update_cursor("grabbing");
+                        self.input = InputState::MovingSel {
+                            ptr_id: pi.id,
+                            start_world,
+                            before,
+                        };
+                    }
+                    SelHit::None => {
+                        let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
+                        if let Some(id) = clicked {
+                            if self.session.doc.runtime.sel_items.contains(&id) {
+                                let roots = self.session.doc.transform_roots();
+                                let before = roots
+                                    .iter()
+                                    .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                                    .collect();
+                                self.update_cursor("grabbing");
+                                self.input = InputState::MovingSel {
+                                    ptr_id: pi.id,
+                                    start_world,
+                                    before,
+                                };
+                            } else {
+                                self.session.doc.clear_sel();
+                                self.session.doc.runtime.sel_items.insert(id);
+                                let before =
+                                    vec![(id, self.session.doc.get_item(id).unwrap().xform())];
+                                self.update_cursor("grabbing");
+                                self.input = InputState::MovingSel {
+                                    ptr_id: pi.id,
+                                    start_world,
+                                    before,
+                                };
                             }
-                            let before = roots
-                                .iter()
-                                .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
-                                .collect();
-                            self.input = InputState::MovingSel {
-                                ptr_id: pi.id,
-                                start_world,
-                                before,
-                            };
                         } else {
                             self.session.doc.clear_sel();
-                            self.session.doc.runtime.sel_items.insert(id);
-                            let before = vec![(id, self.session.doc.get_item(id).unwrap().xform())];
-                            self.input = InputState::MovingSel {
-                                ptr_id: pi.id,
-                                start_world,
-                                before,
-                            };
+                            self.update_cursor("default");
+                            self.input = InputState::Idle;
                         }
-                    } else {
-                        self.session.doc.clear_sel();
-                        self.input = InputState::Idle;
                     }
                 }
             }
@@ -295,6 +263,27 @@ impl StonepenApp {
         e.prevent_default();
         let inputs = get_inputs(e, &self.canvas);
         let ptr_id = e.pointer_id();
+        if matches!(self.input, InputState::Idle) && self.session.active_tool == Tool::Select {
+            if !inputs.is_empty() {
+                let pi = &inputs[inputs.len() - 1];
+                let (hit, _) = self.selection_hit_test(Point2::new(pi.x, pi.y));
+                match hit {
+                    SelHit::Move => self.update_cursor("move"),
+                    SelHit::Rotate => self.update_cursor("grab"),
+                    SelHit::Scale(handle) => match handle {
+                        SelHandle::TopLeft | SelHandle::BottomRight => {
+                            self.update_cursor("nwse-resize")
+                        }
+                        SelHandle::TopRight | SelHandle::BottomLeft => {
+                            self.update_cursor("nesw-resize")
+                        }
+                        _ => self.update_cursor("default"),
+                    },
+                    SelHit::None => self.update_cursor("default"),
+                }
+            }
+        }
+
         let is_erasing =
             matches!(&self.input, InputState::Erasing { ptr_id: id, .. } if *id == ptr_id);
         if is_erasing {
@@ -356,10 +345,11 @@ impl StonepenApp {
                 let delta = world_pos - *start_world;
                 let xf = Xform2D::translate(delta.x, delta.y);
                 for (item_id, start_xf) in before {
-                    if let Some(item) = self.session.doc.get_item_mut(*item_id) {
-                        item.set_xform(xf.concat(*start_xf));
-                    }
+                    self.session
+                        .doc
+                        .apply_world_xform_to_item(*item_id, xf, *start_xf);
                 }
+                self.session.doc.rebuild_runtime();
             }
             InputState::ScalingSel {
                 ptr_id: id,
@@ -379,10 +369,11 @@ impl StonepenApp {
                 let scale = scale.max(0.05);
                 let xf = Xform2D::scale_about(*pivot, scale, scale);
                 for (item_id, start_xf) in before {
-                    if let Some(item) = self.session.doc.get_item_mut(*item_id) {
-                        item.set_xform(xf.concat(*start_xf));
-                    }
+                    self.session
+                        .doc
+                        .apply_world_xform_to_item(*item_id, xf, *start_xf);
                 }
+                self.session.doc.rebuild_runtime();
             }
             InputState::RotatingSel {
                 ptr_id: id,
@@ -397,10 +388,11 @@ impl StonepenApp {
                 let delta_angle = curr_angle - *start_angle;
                 let xf = Xform2D::rotate_about(*pivot, delta_angle);
                 for (item_id, start_xf) in before {
-                    if let Some(item) = self.session.doc.get_item_mut(*item_id) {
-                        item.set_xform(xf.concat(*start_xf));
-                    }
+                    self.session
+                        .doc
+                        .apply_world_xform_to_item(*item_id, xf, *start_xf);
                 }
+                self.session.doc.rebuild_runtime();
             }
             _ => return,
         }
@@ -469,6 +461,7 @@ impl StonepenApp {
             InputState::MovingSel { before, .. }
             | InputState::ScalingSel { before, .. }
             | InputState::RotatingSel { before, .. } => {
+                self.update_cursor("");
                 let mut item_ids = Vec::new();
                 let mut before_xfs = Vec::new();
                 let mut after_xfs = Vec::new();
@@ -519,11 +512,13 @@ impl StonepenApp {
                 InputState::MovingSel { before, .. }
                 | InputState::ScalingSel { before, .. }
                 | InputState::RotatingSel { before, .. } => {
+                    self.update_cursor("");
                     for (id, start_xf) in before {
                         if let Some(item) = self.session.doc.get_item_mut(id) {
                             item.set_xform(start_xf);
                         }
                     }
+                    self.session.doc.rebuild_runtime();
                 }
                 _ => {}
             }
@@ -668,6 +663,171 @@ impl StonepenApp {
         self.vp.screen_h = css_h;
         self.vp.dpr = self.dpr as f32;
         self.redraw();
+    }
+
+    fn update_cursor(&self, cursor_str: &str) {
+        if let Some(window) = web_sys::window() {
+            if let Some(document) = window.document() {
+                if let Some(canvas) = document.get_element_by_id("ink-canvas") {
+                    if let Ok(html_canvas) = canvas.dyn_into::<web_sys::HtmlCanvasElement>() {
+                        let _ = html_canvas.style().set_property("cursor", cursor_str);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn selection_hit_test(&self, screen_pt: Point2) -> (SelHit, Point2) {
+        let sel = &self.session.doc.runtime.sel_items;
+        if sel.is_empty() {
+            return (SelHit::None, Point2::new(0.0, 0.0));
+        }
+
+        let handle_radius = 12.0f32;
+        let hit_handle = |hx: f32, hy: f32| -> bool {
+            let dx = screen_pt.x - hx;
+            let dy = screen_pt.y - hy;
+            dx * dx + dy * dy <= handle_radius * handle_radius
+        };
+
+        let mut single_image = None;
+        if sel.len() == 1 {
+            let id = *sel.iter().next().unwrap();
+            if let Some(InkItem::Image(img)) = self.session.doc.get_item(id) {
+                single_image = Some(img);
+            }
+        }
+
+        if let Some(img) = single_image {
+            let w = img.width;
+            let h = img.height;
+            let corners = [
+                Point2::new(0.0, 0.0),
+                Point2::new(w, 0.0),
+                Point2::new(w, h),
+                Point2::new(0.0, h),
+            ];
+            let sc: Vec<Point2> = corners
+                .iter()
+                .map(|&p| self.vp.world_to_screen(img.xform.apply(p)))
+                .collect();
+            let wc: Vec<Point2> = corners.iter().map(|&p| img.xform.apply(p)).collect();
+
+            if hit_handle(sc[0].x, sc[0].y) {
+                return (SelHit::Scale(SelHandle::TopLeft), wc[2]);
+            }
+            if hit_handle(sc[1].x, sc[1].y) {
+                return (SelHit::Scale(SelHandle::TopRight), wc[3]);
+            }
+            if hit_handle(sc[2].x, sc[2].y) {
+                return (SelHit::Scale(SelHandle::BottomRight), wc[0]);
+            }
+            if hit_handle(sc[3].x, sc[3].y) {
+                return (SelHit::Scale(SelHandle::BottomLeft), wc[1]);
+            }
+
+            let top_mid = Point2::new((sc[0].x + sc[1].x) * 0.5, (sc[0].y + sc[1].y) * 0.5);
+            let dx = sc[1].x - sc[0].x;
+            let dy = sc[1].y - sc[0].y;
+            let len = (dx * dx + dy * dy).sqrt();
+            let (nx, ny) = if len > 1e-4 {
+                (dy / len, -dx / len)
+            } else {
+                (0.0, -1.0)
+            };
+            let rx = top_mid.x + nx * 25.0;
+            let ry = top_mid.y + ny * 25.0;
+
+            if hit_handle(rx, ry) {
+                let center_local = Point2::new(w * 0.5, h * 0.5);
+                let center_world = img.xform.apply(center_local);
+                return (SelHit::Rotate, center_world);
+            }
+
+            if let Some(inv) = img.xform.inverse() {
+                let wp = self.vp.screen_to_world(screen_pt);
+                let lp = inv.apply(wp);
+                if lp.x >= 0.0 && lp.x <= w && lp.y >= 0.0 && lp.y <= h {
+                    return (SelHit::Move, Point2::new(0.0, 0.0));
+                }
+            }
+        } else {
+            if let Some(bbox) = self.session.doc.selection_bbox() {
+                let tl = self.vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
+                let br = self.vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
+                let x = tl.x;
+                let y = tl.y;
+                let w = br.x - tl.x;
+                let h = br.y - tl.y;
+
+                if hit_handle(x, y) {
+                    return (
+                        SelHit::Scale(SelHandle::TopLeft),
+                        Point2::new(bbox.max_x, bbox.max_y),
+                    );
+                }
+                if hit_handle(x + w, y) {
+                    return (
+                        SelHit::Scale(SelHandle::TopRight),
+                        Point2::new(bbox.min_x, bbox.max_y),
+                    );
+                }
+                if hit_handle(x + w, y + h) {
+                    return (
+                        SelHit::Scale(SelHandle::BottomRight),
+                        Point2::new(bbox.min_x, bbox.min_y),
+                    );
+                }
+                if hit_handle(x, y + h) {
+                    return (
+                        SelHit::Scale(SelHandle::BottomLeft),
+                        Point2::new(bbox.max_x, bbox.min_y),
+                    );
+                }
+                if hit_handle(x + w * 0.5, y - 25.0) {
+                    return (
+                        SelHit::Rotate,
+                        Point2::new(
+                            (bbox.min_x + bbox.max_x) * 0.5,
+                            (bbox.min_y + bbox.max_y) * 0.5,
+                        ),
+                    );
+                }
+
+                let wp = self.vp.screen_to_world(screen_pt);
+                if wp.x >= bbox.min_x
+                    && wp.x <= bbox.max_x
+                    && wp.y >= bbox.min_y
+                    && wp.y <= bbox.max_y
+                {
+                    for &id in sel {
+                        if let Some(item) = self.session.doc.get_item(id) {
+                            let hit = match item {
+                                InkItem::Stroke(s) => {
+                                    self.session.doc.stroke_hit(s, wp, 8.0 / self.vp.zoom)
+                                }
+                                InkItem::Image(img) => {
+                                    if let Some(inv) = img.xform.inverse() {
+                                        let lp = inv.apply(wp);
+                                        lp.x >= 0.0
+                                            && lp.x <= img.width
+                                            && lp.y >= 0.0
+                                            && lp.y <= img.height
+                                    } else {
+                                        false
+                                    }
+                                }
+                            };
+                            if hit {
+                                return (SelHit::Move, Point2::new(0.0, 0.0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (SelHit::None, Point2::new(0.0, 0.0))
     }
 
     pub fn redraw(&self) {

@@ -1344,4 +1344,421 @@ mod tests {
         );
         assert!(InkSession::import_json(&bad_json).is_err());
     }
+
+    #[test]
+    fn test_stale_selected_ids_pruned() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        doc.runtime.sel_items.insert(id1);
+        doc.rebuild_runtime();
+        assert!(!doc.runtime.sel_items.contains(&id1));
+    }
+
+    #[test]
+    fn test_annotation_target_resolution_rules() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let asset = ImageAsset {
+            id: AssetId::new(),
+            mime: "image/png".to_string(),
+            width_px: 100,
+            height_px: 100,
+            bytes: vec![0; 5],
+        };
+        doc.add_asset(asset.clone());
+        let img1_id = ItemId::new();
+        doc.add_item(
+            doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img1_id,
+                asset_id: asset.id,
+                width: 100.0,
+                height: 100.0,
+                opacity: 1.0,
+                xform: Xform2D::identity(),
+                local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+                world_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+
+        let img2_id = ItemId::new();
+        doc.add_item(
+            doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img2_id,
+                asset_id: asset.id,
+                width: 100.0,
+                height: 100.0,
+                opacity: 1.0,
+                xform: Xform2D::identity(),
+                local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+                world_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+
+        let stroke1 = InkStroke {
+            id: ItemId::new(),
+            parent_id: Some(img1_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(10.0, 10.0)],
+            pts: vec![make_ink_point(10.0, 10.0)],
+            local_bbox: BBox::new(9.0, 9.0, 11.0, 11.0),
+            world_bbox: BBox::new(9.0, 9.0, 11.0, 11.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let s1_id = stroke1.id;
+        doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke1));
+
+        doc.clear_sel();
+        doc.runtime.sel_items.insert(img1_id);
+        assert_eq!(doc.annotation_target_image(), Some(img1_id));
+
+        doc.runtime.sel_items.insert(s1_id);
+        assert_eq!(doc.annotation_target_image(), Some(img1_id));
+
+        doc.clear_sel();
+        doc.runtime.sel_items.insert(img1_id);
+        doc.runtime.sel_items.insert(img2_id);
+        assert_eq!(doc.annotation_target_image(), None);
+
+        let free_s_id = make_stroke_in_doc(&mut doc, vec![make_ink_point(0.0, 0.0)]);
+        doc.clear_sel();
+        doc.runtime.sel_items.insert(img1_id);
+        doc.runtime.sel_items.insert(free_s_id);
+        assert_eq!(doc.annotation_target_image(), None);
+    }
+
+    #[test]
+    fn test_transform_roots_behavior() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let asset = ImageAsset {
+            id: AssetId::new(),
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![0; 5],
+        };
+        doc.add_asset(asset.clone());
+        let img_id = ItemId::new();
+        doc.add_item(
+            doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img_id,
+                asset_id: asset.id,
+                width: 10.0,
+                height: 10.0,
+                opacity: 1.0,
+                xform: Xform2D::identity(),
+                local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+        let stroke = InkStroke {
+            id: ItemId::new(),
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(5.0, 5.0)],
+            pts: vec![make_ink_point(5.0, 5.0)],
+            local_bbox: BBox::new(4.0, 4.0, 6.0, 6.0),
+            world_bbox: BBox::new(4.0, 4.0, 6.0, 6.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let s_id = stroke.id;
+        doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
+
+        doc.clear_sel();
+        doc.runtime.sel_items.insert(img_id);
+        doc.runtime.sel_items.insert(s_id);
+        let roots1 = doc.transform_roots();
+        assert_eq!(roots1.len(), 1);
+        assert!(roots1.contains(&img_id));
+
+        doc.clear_sel();
+        doc.runtime.sel_items.insert(s_id);
+        let roots2 = doc.transform_roots();
+        assert_eq!(roots2.len(), 1);
+        assert!(roots2.contains(&s_id));
+    }
+
+    #[test]
+    fn test_new_doc_schema_version_3() {
+        let doc = InkDoc::new(800.0, 600.0);
+        assert_eq!(doc.schema_version, 3);
+    }
+
+    #[test]
+    fn test_live_parent_transforms_kid_moves_rtree() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let asset = ImageAsset {
+            id: AssetId::new(),
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![0],
+        };
+        doc.add_asset(asset.clone());
+        let img_id = ItemId::new();
+        doc.add_item(
+            doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img_id,
+                asset_id: asset.id,
+                width: 10.0,
+                height: 10.0,
+                opacity: 1.0,
+                xform: Xform2D::translate(10.0, 10.0),
+                local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+        let stroke = InkStroke {
+            id: ItemId::new(),
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(5.0, 5.0)],
+            pts: vec![make_ink_point(5.0, 5.0)],
+            local_bbox: BBox::new(4.0, 4.0, 6.0, 6.0),
+            world_bbox: BBox::new(4.0, 4.0, 6.0, 6.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let s_id = stroke.id;
+        doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
+
+        if let Some(InkItem::Image(img)) = doc.get_item_mut(img_id) {
+            img.xform = Xform2D::translate(50.0, 50.0);
+        }
+        doc.rebuild_runtime();
+        let kid = doc.get_stroke(s_id).unwrap();
+        assert_eq!(kid.world_bbox.min_x, 54.0);
+
+        let query1 = doc.query_bbox(BBox::new(50.0, 50.0, 60.0, 60.0));
+        assert!(query1.contains(&s_id));
+
+        let query2 = doc.query_bbox(BBox::new(10.0, 10.0, 20.0, 20.0));
+        assert!(!query2.contains(&s_id));
+    }
+
+    #[test]
+    fn test_direct_child_world_transforms() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let asset = ImageAsset {
+            id: AssetId::new(),
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![0],
+        };
+        doc.add_asset(asset.clone());
+        let img_id = ItemId::new();
+        let p_xf = Xform2D::translate(10.0, 10.0)
+            .concat(Xform2D::rotate(1.5707963))
+            .concat(Xform2D::scale(2.0, 2.0));
+        doc.add_item(
+            doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img_id,
+                asset_id: asset.id,
+                width: 10.0,
+                height: 10.0,
+                opacity: 1.0,
+                xform: p_xf,
+                local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+        let stroke = InkStroke {
+            id: ItemId::new(),
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(5.0, 5.0)],
+            pts: vec![make_ink_point(5.0, 5.0)],
+            local_bbox: BBox::new(4.0, 4.0, 6.0, 6.0),
+            world_bbox: BBox::new(4.0, 4.0, 6.0, 6.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let s_id = stroke.id;
+        doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
+
+        let w_trans = Xform2D::translate(20.0, 30.0);
+        let orig_local = doc.get_item(s_id).unwrap().xform();
+        doc.apply_world_xform_to_item(s_id, w_trans, orig_local);
+        doc.rebuild_runtime();
+
+        let eff_xf = doc.effective_xform(s_id);
+        let expected = w_trans.concat(p_xf).concat(orig_local);
+        assert!((eff_xf.tx - expected.tx).abs() < 1e-3);
+        assert!((eff_xf.ty - expected.ty).abs() < 1e-3);
+
+        if let Some(InkItem::Image(img)) = doc.get_item_mut(img_id) {
+            img.xform = Xform2D {
+                a: 0.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+                tx: 0.0,
+                ty: 0.0,
+            };
+        }
+        let pre_s_xf = doc.get_stroke(s_id).unwrap().xform;
+        doc.apply_world_xform_to_item(s_id, w_trans, pre_s_xf);
+        assert_eq!(doc.get_stroke(s_id).unwrap().xform, pre_s_xf);
+    }
+
+    #[test]
+    fn test_undo_duplicate_stale_sel_ids() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset = ImageAsset {
+            id: AssetId::new(),
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![0],
+        };
+        session.doc.add_asset(asset.clone());
+        let img_id = ItemId::new();
+        session.doc.add_item(
+            session.doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img_id,
+                asset_id: asset.id,
+                width: 10.0,
+                height: 10.0,
+                opacity: 1.0,
+                xform: Xform2D::identity(),
+                local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+
+        session.doc.clear_sel();
+        session.doc.runtime.sel_items.insert(img_id);
+        session.duplicate_sel();
+        assert_eq!(session.doc.runtime.sel_items.len(), 1);
+
+        session.undo();
+        assert_eq!(session.doc.runtime.sel_items.len(), 0);
+    }
+
+    #[test]
+    fn test_repeated_sequence_regression() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset = ImageAsset {
+            id: AssetId::new(),
+            mime: "image/png".to_string(),
+            width_px: 100,
+            height_px: 100,
+            bytes: vec![0; 5],
+        };
+        session.doc.add_asset(asset.clone());
+        let img_id = ItemId::new();
+        session.doc.add_item(
+            session.doc.active_layer_id,
+            InkItem::Image(InkImage {
+                id: img_id,
+                asset_id: asset.id,
+                width: 100.0,
+                height: 100.0,
+                opacity: 1.0,
+                xform: Xform2D::identity(),
+                local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+                world_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        );
+
+        // Select image, draw first stroke (attached)
+        session.doc.clear_sel();
+        session.doc.runtime.sel_items.insert(img_id);
+        let target1 = session.doc.annotation_target_image();
+        assert_eq!(target1, Some(img_id));
+
+        let kid1 = InkStroke {
+            id: ItemId::new(),
+            parent_id: target1,
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(50.0, 50.0)],
+            pts: vec![make_ink_point(50.0, 50.0)],
+            local_bbox: BBox::new(48.0, 48.0, 52.0, 52.0),
+            world_bbox: BBox::new(48.0, 48.0, 52.0, 52.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let kid1_id = kid1.id;
+        session
+            .doc
+            .add_item(session.doc.active_layer_id, InkItem::Stroke(kid1));
+
+        // Move the image
+        if let Some(InkItem::Image(img)) = session.doc.get_item_mut(img_id) {
+            img.xform = Xform2D::translate(100.0, 100.0);
+        }
+        session.doc.rebuild_runtime();
+
+        // Draw second stroke (should still resolve target to img_id!)
+        let target2 = session.doc.annotation_target_image();
+        assert_eq!(target2, Some(img_id));
+
+        let kid2 = InkStroke {
+            id: ItemId::new(),
+            parent_id: target2,
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(30.0, 30.0)],
+            pts: vec![make_ink_point(30.0, 30.0)],
+            local_bbox: BBox::new(28.0, 28.0, 32.0, 32.0),
+            world_bbox: BBox::new(28.0, 28.0, 32.0, 32.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let kid2_id = kid2.id;
+        session
+            .doc
+            .add_item(session.doc.active_layer_id, InkItem::Stroke(kid2));
+
+        // Move the image again
+        if let Some(InkItem::Image(img)) = session.doc.get_item_mut(img_id) {
+            img.xform = Xform2D::translate(200.0, 200.0);
+        }
+        session.doc.rebuild_runtime();
+
+        // Both strokes should be translated with the parent
+        let eff1 = session.doc.effective_xform(kid1_id);
+        let eff2 = session.doc.effective_xform(kid2_id);
+        assert_eq!(eff1, Xform2D::translate(200.0, 200.0));
+        assert_eq!(eff2, Xform2D::translate(200.0, 200.0));
+    }
 }
