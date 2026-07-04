@@ -323,3 +323,33 @@ pub fn compute_conservative_stroke_bbox(
         max_y: max_y + pad,
     })
 }
+
+pub fn polygon_intersects_polygon(poly_a: &[Point2], poly_b: &[Point2]) -> bool {
+    if poly_a.len() < 3 || poly_b.len() < 3 {
+        return false;
+    }
+    for &p in poly_a {
+        if point_in_polygon(p, poly_b) {
+            return true;
+        }
+    }
+    for &p in poly_b {
+        if point_in_polygon(p, poly_a) {
+            return true;
+        }
+    }
+    let na = poly_a.len();
+    let nb = poly_b.len();
+    for i in 0..na {
+        let sa1 = poly_a[i];
+        let sa2 = poly_a[(i + 1) % na];
+        for j in 0..nb {
+            let sb1 = poly_b[j];
+            let sb2 = poly_b[(j + 1) % nb];
+            if segments_intersect(sa1, sa2, sb1, sb2) {
+                return true;
+            }
+        }
+    }
+    false
+}

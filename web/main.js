@@ -20,6 +20,33 @@ async function main() {
     app.on_key(e);
   });
 
+  canvas.addEventListener("redraw", () => {
+    app.redraw();
+  });
+
+  window.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.indexOf("image") !== -1) {
+        const file = item.getAsFile();
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const bytes = new Uint8Array(ev.target.result);
+          const img = new Image();
+          img.onload = () => {
+            app.paste_image(bytes, file.type, img.width, img.height);
+          };
+          img.src = URL.createObjectURL(file);
+        };
+        reader.readAsArrayBuffer(file);
+        e.preventDefault();
+        break;
+      }
+    }
+  });
+
   const toolBtns = document.querySelectorAll(".tool-btn");
   toolBtns.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -31,6 +58,7 @@ async function main() {
       if (tool === "pan") canvas.classList.add("tool-pan");
       else if (tool === "eraser") canvas.classList.add("tool-eraser");
       else if (tool === "lasso") canvas.classList.add("tool-lasso");
+      else if (tool === "select") canvas.classList.add("tool-select");
     });
   });
 

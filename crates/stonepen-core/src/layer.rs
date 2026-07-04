@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::LayerId;
-use crate::stroke::InkStroke;
+use crate::item::InkItem;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InkLayer {
@@ -10,7 +10,7 @@ pub struct InkLayer {
     pub visible: bool,
     pub locked: bool,
     pub opacity: f32,
-    pub strokes: Vec<InkStroke>,
+    pub items: Vec<InkItem>,
 }
 
 impl InkLayer {
@@ -21,7 +21,7 @@ impl InkLayer {
             visible: true,
             locked: false,
             opacity: 1.0,
-            strokes: Vec::new(),
+            items: Vec::new(),
         }
     }
 }

@@ -1,4 +1,7 @@
+use base64::Engine;
+
 use crate::doc::InkDoc;
+use crate::item::InkItem;
 use crate::session::InkError;
 use crate::stroke::InkStroke;
 use crate::xform::Xform2D;
@@ -19,19 +22,35 @@ pub fn export_svg(doc: &InkDoc) -> Result<String, InkError> {
             layer.id.0, layer.opacity
         ));
         out.push('\n');
-        for stroke in &layer.strokes {
-            let path = stroke_to_svg_path(stroke);
-            let color = &stroke.brush.color;
-            let opacity = stroke.brush.opacity;
-            let stroke_w = stroke.brush.base_w;
-            let (r, g, b, a) = (color.r, color.g, color.b, color.a as f32 / 255.0);
-            let xf = stroke.xform;
-            let transform = xform_to_svg(xf);
-            out.push_str(&format!(
-                r#"    <path d="{}" stroke="rgba({},{},{},{:.3})" stroke-width="{}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="{:.3}" transform="{}" />"#,
-                path, r, g, b, a, stroke_w, opacity, transform
-            ));
-            out.push('\n');
+        for item in &layer.items {
+            match item {
+                InkItem::Stroke(stroke) => {
+                    let path = stroke_to_svg_path(stroke);
+                    let color = &stroke.brush.color;
+                    let opacity = stroke.brush.opacity;
+                    let stroke_w = stroke.brush.base_w;
+                    let (r, g, b, a) = (color.r, color.g, color.b, color.a as f32 / 255.0);
+                    let xf = stroke.xform;
+                    let transform = xform_to_svg(xf);
+                    out.push_str(&format!(
+                        r#"    <path d="{}" stroke="rgba({},{},{},{:.3})" stroke-width="{}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="{:.3}" transform="{}" />"#,
+                        path, r, g, b, a, stroke_w, opacity, transform
+                    ));
+                    out.push('\n');
+                }
+                InkItem::Image(img) => {
+                    if let Some(asset) = doc.get_asset(img.asset_id) {
+                        let base64_str =
+                            base64::engine::general_purpose::STANDARD.encode(&asset.bytes);
+                        let transform = xform_to_svg(img.xform);
+                        out.push_str(&format!(
+                            r#"    <image href="data:{};base64,{}" width="{}" height="{}" opacity="{:.3}" transform="{}" />"#,
+                            asset.mime, base64_str, img.width, img.height, img.opacity, transform
+                        ));
+                        out.push('\n');
+                    }
+                }
+            }
         }
         out.push_str("  </g>\n");
     }

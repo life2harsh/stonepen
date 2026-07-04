@@ -7,6 +7,7 @@ pub mod export_svg;
 pub mod geom;
 pub mod hit;
 pub mod ids;
+pub mod item;
 pub mod layer;
 pub mod ops;
 pub mod point;
@@ -27,11 +28,12 @@ pub use doc::{InkBackground, InkDoc};
 pub use geom::{
     compute_conservative_stroke_bbox, compute_outline_bbox, generate_stroke_outline, xform_scale,
 };
-pub use ids::{BrushId, DocId, LayerId, StrokeId};
+pub use ids::{AssetId, BrushId, DocId, ItemId, LayerId, StrokeId};
+pub use item::{ImageAsset, InkImage, InkItem};
 pub use layer::InkLayer;
 pub use ops::{InkOp, InkTx, UndoRedo};
 pub use point::{InkPoint, Point2, PointerKind, Vec2};
-pub use runtime::{IndexedStroke, InkRuntime, StrokeAddress};
+pub use runtime::InkRuntime;
 pub use session::{InkError, InkSession, Tool};
 pub use smooth::adaptive_catmull_rom;
 pub use stroke::{InkStroke, StrokeBuilder};
@@ -210,9 +212,13 @@ mod tests {
         let pts = vec![make_ink_point(10.0, 10.0), make_ink_point(100.0, 10.0)];
         make_stroke_in_doc(&mut doc, pts);
         let _layer_id = doc.active_layer_id;
-        let stroke = &doc.active_layer().unwrap().strokes[0];
-        assert!(hit::stroke_hit(stroke, Point2::new(50.0, 10.0), 5.0));
-        assert!(!hit::stroke_hit(stroke, Point2::new(50.0, 100.0), 5.0));
+        let item = &doc.active_layer().unwrap().items[0];
+        if let InkItem::Stroke(stroke) = item {
+            assert!(hit::stroke_hit(stroke, Point2::new(50.0, 10.0), 5.0));
+            assert!(!hit::stroke_hit(stroke, Point2::new(50.0, 100.0), 5.0));
+        } else {
+            panic!("expected stroke");
+        }
     }
 
     #[test]
@@ -247,7 +253,7 @@ mod tests {
         ];
         let sel = doc.select_lasso(&polygon);
         assert!(sel.contains(&sid));
-        assert!(doc.runtime.sel_strokes.contains(&sid));
+        assert!(doc.runtime.sel_items.contains(&sid));
     }
 
     #[test]
@@ -270,9 +276,9 @@ mod tests {
         let mut doc = InkDoc::new(800.0, 600.0);
         let pts = vec![make_ink_point(10.0, 10.0), make_ink_point(20.0, 20.0)];
         let sid = make_stroke_in_doc(&mut doc, pts);
-        assert!(doc.runtime.stroke_pos.contains_key(&sid));
+        assert!(doc.runtime.item_pos.contains_key(&sid));
         doc.rebuild_runtime();
-        assert!(doc.runtime.stroke_pos.contains_key(&sid));
+        assert!(doc.runtime.item_pos.contains_key(&sid));
     }
 
     #[test]
@@ -280,9 +286,9 @@ mod tests {
         let mut doc = InkDoc::new(800.0, 600.0);
         let pts = vec![make_ink_point(10.0, 10.0), make_ink_point(20.0, 10.0)];
         let sid = make_stroke_in_doc(&mut doc, pts);
-        assert!(doc.runtime.stroke_pos.contains_key(&sid));
-        doc.delete_stroke(sid);
-        assert!(!doc.runtime.stroke_pos.contains_key(&sid));
+        assert!(doc.runtime.item_pos.contains_key(&sid));
+        doc.delete_items(&[sid]);
+        assert!(!doc.runtime.item_pos.contains_key(&sid));
         let candidates = doc.query_bbox(BBox::new(0.0, 0.0, 100.0, 100.0));
         assert!(!candidates.contains(&sid));
     }
@@ -298,9 +304,9 @@ mod tests {
             &mut doc,
             vec![make_ink_point(30.0, 10.0), make_ink_point(40.0, 10.0)],
         );
-        doc.delete_strokes(&[s1, s2]);
-        assert!(!doc.runtime.stroke_pos.contains_key(&s1));
-        assert!(!doc.runtime.stroke_pos.contains_key(&s2));
+        doc.delete_items(&[s1, s2]);
+        assert!(!doc.runtime.item_pos.contains_key(&s1));
+        assert!(!doc.runtime.item_pos.contains_key(&s2));
     }
 
     #[test]
@@ -324,11 +330,11 @@ mod tests {
             geom_rev: 0,
         };
         session.add_stroke(stroke);
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 1);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 1);
         session.undo();
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 0);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 0);
         session.redo();
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 1);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 1);
     }
 
     #[test]
@@ -354,9 +360,9 @@ mod tests {
         let _sid = stroke.id;
         session.add_stroke(stroke);
         session.erase_at(Point2::new(15.0, 10.0), 10.0);
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 0);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 0);
         session.undo();
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 1);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 1);
     }
 
     #[test]
@@ -385,13 +391,13 @@ mod tests {
             };
             session.add_stroke(stroke);
         }
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 3);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 3);
         session.clear_active_layer();
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 0);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 0);
         session.undo();
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 3);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 3);
         session.redo();
-        assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 0);
+        assert_eq!(session.doc.active_layer().unwrap().items.len(), 0);
     }
 
     #[test]
@@ -420,8 +426,8 @@ mod tests {
         let restored = InkSession::import_json(&json).unwrap();
         assert_eq!(restored.doc.layers.len(), 1);
         let layer = restored.doc.active_layer().unwrap();
-        assert_eq!(layer.strokes.len(), 1);
-        assert_eq!(layer.strokes[0].id, sid);
+        assert_eq!(layer.items.len(), 1);
+        assert_eq!(layer.items[0].id(), sid);
     }
 
     #[test]
@@ -430,7 +436,7 @@ mod tests {
         let json = session.export_json().unwrap();
         let restored = InkSession::import_json(&json).unwrap();
         assert_eq!(restored.doc.layers.len(), 1);
-        assert_eq!(restored.doc.active_layer().unwrap().strokes.len(), 0);
+        assert_eq!(restored.doc.active_layer().unwrap().items.len(), 0);
     }
 
     #[test]
@@ -973,5 +979,112 @@ mod tests {
         });
         session.do_tx(tx);
         assert_eq!(session.doc.get_stroke(sid).unwrap().geom_rev, 1);
+    }
+
+    #[test]
+    fn test_xform_inverse() {
+        let xf = Xform2D::translate(10.0, -5.0)
+            .concat(Xform2D::rotate(0.5))
+            .concat(Xform2D::scale(2.0, 3.0));
+        let inv = xf.inverse().unwrap();
+        let pt = Point2::new(1.0, 2.0);
+        let transformed = xf.apply(pt);
+        let restored = inv.apply(transformed);
+        assert!((restored.x - pt.x).abs() < 1e-4);
+        assert!((restored.y - pt.y).abs() < 1e-4);
+
+        let singular = Xform2D {
+            a: 1.0,
+            b: 2.0,
+            c: 2.0,
+            d: 4.0,
+            tx: 0.0,
+            ty: 0.0,
+        };
+        assert!(singular.inverse().is_none());
+    }
+
+    #[test]
+    fn test_v1_v2_migration() {
+        let v1_json = r#"{
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000000",
+            "width": 800.0,
+            "height": 600.0,
+            "background": "Plain",
+            "active_layer_id": "11111111-1111-1111-1111-111111111111",
+            "layers": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "name": "Layer 1",
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "strokes": [
+                        {
+                            "id": "22222222-2222-2222-2222-222222222222",
+                            "brush": {
+                                "id": "33333333-3333-3333-3333-333333333333",
+                                "name": "Pen",
+                                "kind": "Pen",
+                                "color": {"r": 0, "g": 0, "b": 0, "a": 255},
+                                "base_w": 2.0,
+                                "opacity": 1.0,
+                                "min_press": 0.1,
+                                "max_press": 1.0,
+                                "smooth": 0.5,
+                                "streamline": 0.5,
+                                "taper_start": 0.0,
+                                "taper_end": 2.0
+                            },
+                            "raw_pts": [],
+                            "pts": [],
+                            "local_bbox": {"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0},
+                            "world_bbox": {"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0},
+                            "xform": {"a": 1.0, "b": 0.0, "c": 0.0, "d": 1.0, "tx": 0.0, "ty": 0.0},
+                            "created_at_ms": 0,
+                            "updated_at_ms": 0
+                        }
+                    ]
+                }
+            ],
+            "created_at_ms": 0,
+            "updated_at_ms": 0
+        }"#;
+
+        let session = InkSession::import_json(v1_json).unwrap();
+        assert_eq!(session.doc.schema_version, 1);
+        let layer = &session.doc.layers[0];
+        assert_eq!(layer.items.len(), 1);
+        assert!(layer.items[0].is_stroke());
+    }
+
+    #[test]
+    fn test_z_order_preservation() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let pts = vec![make_ink_point(0.0, 0.0)];
+        make_stroke_in_doc(&mut session.doc, pts.clone());
+        make_stroke_in_doc(&mut session.doc, pts.clone());
+        make_stroke_in_doc(&mut session.doc, pts.clone());
+        assert_eq!(session.doc.layers[0].items.len(), 3);
+
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|item| item.id())
+            .collect();
+        let to_delete = vec![ids[0], ids[2]];
+        let removed = session.doc.delete_items(&to_delete);
+        assert_eq!(session.doc.layers[0].items.len(), 1);
+        assert_eq!(session.doc.layers[0].items[0].id(), ids[1]);
+
+        let tx = InkTx::new("delete").push(InkOp::DeleteItems { items: removed });
+        session.do_tx(tx);
+
+        session.undo();
+        assert_eq!(session.doc.layers[0].items.len(), 3);
+        assert_eq!(session.doc.layers[0].items[0].id(), ids[0]);
+        assert_eq!(session.doc.layers[0].items[1].id(), ids[1]);
+        assert_eq!(session.doc.layers[0].items[2].id(), ids[2]);
     }
 }

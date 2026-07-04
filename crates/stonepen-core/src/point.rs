@@ -62,3 +62,29 @@ impl InkPoint {
         }
     }
 }
+
+impl std::ops::Sub<Point2> for Point2 {
+    type Output = Vec2;
+    fn sub(self, other: Point2) -> Vec2 {
+        Vec2 {
+            x: self.x - other.x,
+            y: self.y - other.y,
+        }
+    }
+}
+
+impl std::ops::Add<Vec2> for Point2 {
+    type Output = Point2;
+    fn add(self, other: Vec2) -> Point2 {
+        Point2 {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
+
+impl Vec2 {
+    pub fn len(self) -> f32 {
+        self.length()
+    }
+}

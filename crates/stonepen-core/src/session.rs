@@ -4,7 +4,8 @@ use crate::brush::Brush;
 use crate::doc::InkDoc;
 use crate::export_json;
 use crate::export_svg;
-use crate::ids::StrokeId;
+use crate::ids::{ItemId, LayerId};
+use crate::item::InkItem;
 use crate::ops::{InkOp, InkTx, UndoRedo};
 use crate::point::{Point2, Vec2};
 use crate::stroke::InkStroke;
@@ -82,7 +83,13 @@ impl InkSession {
 
     pub fn add_stroke(&mut self, stroke: InkStroke) {
         let layer_id = self.doc.active_layer_id;
-        let tx = InkTx::new("add stroke").push(InkOp::AddStroke { layer_id, stroke });
+        let tx = InkTx::new("add stroke").push(InkOp::AddItems {
+            layer_id,
+            items: vec![(
+                self.doc.active_layer().map(|l| l.items.len()).unwrap_or(0),
+                InkItem::Stroke(stroke),
+            )],
+        });
         self.do_tx(tx);
     }
 
@@ -91,82 +98,121 @@ impl InkSession {
         if candidates.is_empty() {
             return;
         }
-        let mut strokes_to_delete = Vec::new();
-        for sid in candidates {
-            if let Some(s) = self.doc.get_stroke(sid) {
+        let mut items_to_delete = Vec::new();
+        for id in candidates {
+            if let Some(InkItem::Stroke(s)) = self.doc.get_item(id) {
                 if crate::hit::stroke_hit(s, pos, radius) {
-                    strokes_to_delete.push(sid);
+                    items_to_delete.push(id);
                 }
             }
         }
-        if strokes_to_delete.is_empty() {
+        if items_to_delete.is_empty() {
             return;
         }
-        let removed = self.doc.delete_strokes(&strokes_to_delete);
-        let tx = InkTx::new("erase").push(InkOp::DeleteStrokes { strokes: removed });
-        self.undo_redo.push(tx);
-        self.rev += 1;
-        self.dirty = true;
+        let removed = self.doc.delete_items(&items_to_delete);
+        let tx = InkTx::new("erase").push(InkOp::DeleteItems { items: removed });
+        self.do_tx(tx);
     }
 
     pub fn delete_sel(&mut self) {
-        let sel: Vec<StrokeId> = self.doc.runtime.sel_strokes.iter().copied().collect();
+        let sel: Vec<ItemId> = self.doc.runtime.sel_items.iter().copied().collect();
         if sel.is_empty() {
             return;
         }
-        let removed = self.doc.delete_strokes(&sel);
+        let removed = self.doc.delete_items(&sel);
         self.doc.clear_sel();
-        let tx = InkTx::new("delete selection").push(InkOp::DeleteStrokes { strokes: removed });
-        self.undo_redo.push(tx);
-        self.rev += 1;
-        self.dirty = true;
+        let mut tx = InkTx::new("delete").push(InkOp::DeleteItems {
+            items: removed.clone(),
+        });
+        for (_, _, item) in &removed {
+            if let InkItem::Image(img) = item {
+                if !self.doc.has_asset_references(img.asset_id) {
+                    if let Some(asset) = self.doc.get_asset(img.asset_id) {
+                        tx = tx.push(InkOp::DeleteAsset {
+                            asset: asset.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        self.do_tx(tx);
     }
 
     pub fn clear_active_layer(&mut self) {
         let layer_id = self.doc.active_layer_id;
-        let prev_strokes = self.doc.clear_layer(layer_id);
-        let tx = InkTx::new("clear layer").push(InkOp::ClearLayer {
+        let prev_items = self.doc.clear_layer(layer_id);
+        let mut tx = InkTx::new("clear layer").push(InkOp::ClearLayer {
             layer_id,
-            prev_strokes,
+            prev_items: prev_items.clone(),
         });
-        self.undo_redo.push(tx);
-        self.rev += 1;
-        self.dirty = true;
+        for item in &prev_items {
+            if let InkItem::Image(img) = item {
+                if !self.doc.has_asset_references(img.asset_id) {
+                    if let Some(asset) = self.doc.get_asset(img.asset_id) {
+                        tx = tx.push(InkOp::DeleteAsset {
+                            asset: asset.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        self.do_tx(tx);
     }
 
     pub fn select_lasso(&mut self, polygon: &[Point2]) {
         self.doc.select_lasso(polygon);
     }
 
-    pub fn move_sel(&mut self, delta: Vec2) {
-        let sel: Vec<StrokeId> = self.doc.runtime.sel_strokes.iter().copied().collect();
+    pub fn duplicate_sel(&mut self) {
+        let sel: Vec<ItemId> = self.doc.runtime.sel_items.iter().copied().collect();
         if sel.is_empty() {
             return;
         }
-        let mut before = Vec::new();
-        let mut after = Vec::new();
-        for &sid in &sel {
-            if let Some(stroke) = self.doc.get_stroke(sid) {
-                let old_xf = stroke.xform;
-                before.push(old_xf);
-                after.push(Xform2D::translate(delta.x, delta.y).concat(old_xf));
+        let mut dup_items = Vec::new();
+        let offset = Vec2::new(15.0, 15.0);
+        for id in sel {
+            if let Some(item) = self.doc.get_item(id) {
+                let mut cloned = item.clone();
+                match &mut cloned {
+                    InkItem::Stroke(s) => {
+                        s.id = ItemId::new();
+                        s.xform = Xform2D::translate(offset.x, offset.y).concat(s.xform);
+                        s.recompute_world_bbox();
+                    }
+                    InkItem::Image(img) => {
+                        img.id = ItemId::new();
+                        img.xform = Xform2D::translate(offset.x, offset.y).concat(img.xform);
+                        img.recompute_world_bbox();
+                    }
+                }
+                if let Some(addr) = self.doc.runtime.item_pos.get(&id) {
+                    dup_items.push((addr.layer_idx, addr.item_idx + 1, cloned));
+                }
             }
         }
-        for (i, &sid) in sel.iter().enumerate() {
-            if let Some(stroke) = self.doc.get_stroke_mut(sid) {
-                stroke.xform = after[i];
-                stroke.recompute_world_bbox();
-            }
+        if dup_items.is_empty() {
+            return;
         }
-        self.doc.rebuild_runtime();
-        let tx = InkTx::new("move selection").push(InkOp::TransformStrokes {
-            stroke_ids: sel,
-            before,
-            after,
-        });
-        self.undo_redo.push(tx);
-        self.rev += 1;
-        self.dirty = true;
+        let mut tx = InkTx::new("duplicate");
+        let mut items_by_layer: std::collections::HashMap<LayerId, Vec<(usize, InkItem)>> =
+            std::collections::HashMap::new();
+        let mut new_ids = Vec::new();
+        for (layer_idx, insert_idx, item) in dup_items {
+            let layer_id = self.doc.layers[layer_idx].id;
+            new_ids.push(item.id());
+            items_by_layer
+                .entry(layer_id)
+                .or_default()
+                .push((insert_idx, item));
+        }
+        for (layer_id, items) in items_by_layer {
+            tx = tx.push(InkOp::AddItems { layer_id, items });
+        }
+        self.do_tx(tx);
+        self.doc.clear_sel();
+        for id in new_ids {
+            self.doc.runtime.sel_items.insert(id);
+        }
     }
 
     pub fn export_json(&self) -> Result<String, InkError> {
@@ -198,20 +244,19 @@ impl InkSession {
 
     fn apply_op(&mut self, op: &InkOp) {
         match op {
-            InkOp::AddStroke { layer_id, stroke } => {
-                self.doc.add_stroke(*layer_id, stroke.clone());
+            InkOp::AddItems { layer_id, items } => {
+                self.doc.add_items(*layer_id, items.clone());
             }
-            InkOp::DeleteStrokes { strokes } => {
-                let ids: Vec<StrokeId> = strokes.iter().map(|(_, s)| s.id).collect();
-                self.doc.delete_strokes(&ids);
+            InkOp::DeleteItems { items } => {
+                let ids: Vec<ItemId> = items.iter().map(|(_, _, item)| item.id()).collect();
+                self.doc.delete_items(&ids);
             }
-            InkOp::TransformStrokes {
-                stroke_ids, after, ..
+            InkOp::TransformItems {
+                item_ids, after, ..
             } => {
-                for (i, &sid) in stroke_ids.iter().enumerate() {
-                    if let Some(stroke) = self.doc.get_stroke_mut(sid) {
-                        stroke.xform = after[i];
-                        stroke.recompute_world_bbox();
+                for (i, &id) in item_ids.iter().enumerate() {
+                    if let Some(item) = self.doc.get_item_mut(id) {
+                        item.set_xform(after[i]);
                     }
                 }
                 self.doc.rebuild_runtime();
@@ -257,6 +302,12 @@ impl InkSession {
             InkOp::SetActiveLayer { next, .. } => {
                 self.doc.active_layer_id = *next;
             }
+            InkOp::AddAsset { asset } => {
+                self.doc.add_asset(asset.clone());
+            }
+            InkOp::DeleteAsset { asset } => {
+                self.doc.delete_asset(asset.id);
+            }
         }
     }
 
@@ -264,26 +315,36 @@ impl InkSession {
         let mut inv_ops = Vec::new();
         for op in tx.ops.iter().rev() {
             match op {
-                InkOp::AddStroke { layer_id, stroke } => {
-                    inv_ops.push(InkOp::DeleteStrokes {
-                        strokes: vec![(*layer_id, stroke.clone())],
+                InkOp::AddItems { layer_id, items } => {
+                    inv_ops.push(InkOp::DeleteItems {
+                        items: items
+                            .iter()
+                            .map(|(idx, item)| (*layer_id, *idx, item.clone()))
+                            .collect(),
                     });
                 }
-                InkOp::DeleteStrokes { strokes } => {
-                    for (layer_id, stroke) in strokes {
-                        inv_ops.push(InkOp::AddStroke {
-                            layer_id: *layer_id,
-                            stroke: stroke.clone(),
-                        });
+                InkOp::DeleteItems { items } => {
+                    let mut items_by_layer: std::collections::HashMap<
+                        LayerId,
+                        Vec<(usize, InkItem)>,
+                    > = std::collections::HashMap::new();
+                    for (layer_id, idx, item) in items {
+                        items_by_layer
+                            .entry(*layer_id)
+                            .or_default()
+                            .push((*idx, item.clone()));
+                    }
+                    for (layer_id, items) in items_by_layer {
+                        inv_ops.push(InkOp::AddItems { layer_id, items });
                     }
                 }
-                InkOp::TransformStrokes {
-                    stroke_ids,
+                InkOp::TransformItems {
+                    item_ids,
                     before,
                     after,
                 } => {
-                    inv_ops.push(InkOp::TransformStrokes {
-                        stroke_ids: stroke_ids.clone(),
+                    inv_ops.push(InkOp::TransformItems {
+                        item_ids: item_ids.clone(),
                         before: after.clone(),
                         after: before.clone(),
                     });
@@ -301,14 +362,16 @@ impl InkSession {
                 }
                 InkOp::ClearLayer {
                     layer_id,
-                    prev_strokes,
+                    prev_items,
                 } => {
-                    for stroke in prev_strokes.iter().rev() {
-                        inv_ops.push(InkOp::AddStroke {
-                            layer_id: *layer_id,
-                            stroke: stroke.clone(),
-                        });
-                    }
+                    inv_ops.push(InkOp::AddItems {
+                        layer_id: *layer_id,
+                        items: prev_items
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, item)| (idx, item.clone()))
+                            .collect(),
+                    });
                 }
                 InkOp::AddLayer { layer, idx } => {
                     inv_ops.push(InkOp::DeleteLayer {
@@ -337,6 +400,16 @@ impl InkSession {
                     inv_ops.push(InkOp::SetActiveLayer {
                         prev: *next,
                         next: *prev,
+                    });
+                }
+                InkOp::AddAsset { asset } => {
+                    inv_ops.push(InkOp::DeleteAsset {
+                        asset: asset.clone(),
+                    });
+                }
+                InkOp::DeleteAsset { asset } => {
+                    inv_ops.push(InkOp::AddAsset {
+                        asset: asset.clone(),
                     });
                 }
             }

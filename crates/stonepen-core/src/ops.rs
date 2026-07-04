@@ -1,20 +1,20 @@
 use crate::brush::Brush;
-use crate::ids::{LayerId, StrokeId};
+use crate::ids::{ItemId, LayerId, StrokeId};
+use crate::item::{ImageAsset, InkItem};
 use crate::layer::InkLayer;
-use crate::stroke::InkStroke;
 use crate::xform::Xform2D;
 
 #[derive(Debug, Clone)]
 pub enum InkOp {
-    AddStroke {
+    AddItems {
         layer_id: LayerId,
-        stroke: InkStroke,
+        items: Vec<(usize, InkItem)>,
     },
-    DeleteStrokes {
-        strokes: Vec<(LayerId, InkStroke)>,
+    DeleteItems {
+        items: Vec<(LayerId, usize, InkItem)>,
     },
-    TransformStrokes {
-        stroke_ids: Vec<StrokeId>,
+    TransformItems {
+        item_ids: Vec<ItemId>,
         before: Vec<Xform2D>,
         after: Vec<Xform2D>,
     },
@@ -25,7 +25,7 @@ pub enum InkOp {
     },
     ClearLayer {
         layer_id: LayerId,
-        prev_strokes: Vec<InkStroke>,
+        prev_items: Vec<InkItem>,
     },
     AddLayer {
         layer: InkLayer,
@@ -43,6 +43,12 @@ pub enum InkOp {
     SetActiveLayer {
         prev: LayerId,
         next: LayerId,
+    },
+    AddAsset {
+        asset: ImageAsset,
+    },
+    DeleteAsset {
+        asset: ImageAsset,
     },
 }
 

@@ -5,6 +5,7 @@ pub struct KeyAction {
     pub redo: bool,
     pub delete: bool,
     pub escape: bool,
+    pub duplicate: bool,
 }
 
 pub fn parse_key(e: &KeyboardEvent) -> KeyAction {
@@ -15,5 +16,6 @@ pub fn parse_key(e: &KeyboardEvent) -> KeyAction {
         redo: ctrl && (key == "y" || (key == "z" && e.shift_key())),
         delete: key == "Delete" || key == "Backspace",
         escape: key == "Escape",
+        duplicate: ctrl && (key == "d" || key == "D"),
     }
 }

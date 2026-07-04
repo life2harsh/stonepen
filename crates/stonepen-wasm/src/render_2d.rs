@@ -3,12 +3,14 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use stonepen_core::brush::BrushKind;
 use stonepen_core::doc::{InkBackground, InkDoc};
-use stonepen_core::ids::StrokeId;
+use stonepen_core::ids::{AssetId, StrokeId};
+use stonepen_core::item::InkItem;
 use stonepen_core::point::{InkPoint, Point2};
 use stonepen_core::session::InkSession;
 use stonepen_core::stroke::InkStroke;
 use stonepen_core::viewport::Viewport;
-use web_sys::CanvasRenderingContext2d;
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, HtmlImageElement};
 
 struct StrokeCacheEntry {
     geom_rev: u64,
@@ -38,16 +40,23 @@ impl StrokeCacheEntry {
     }
 }
 
+struct ImageCacheEntry {
+    img: HtmlImageElement,
+    _closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+}
+
 pub struct Renderer {
     pub ctx: CanvasRenderingContext2d,
-    cache: RefCell<HashMap<StrokeId, StrokeCacheEntry>>,
+    stroke_cache: RefCell<HashMap<StrokeId, StrokeCacheEntry>>,
+    image_cache: RefCell<HashMap<AssetId, ImageCacheEntry>>,
 }
 
 impl Renderer {
     pub fn new(ctx: CanvasRenderingContext2d) -> Self {
         Self {
             ctx,
-            cache: RefCell::new(HashMap::new()),
+            stroke_cache: RefCell::new(HashMap::new()),
+            image_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -61,20 +70,25 @@ impl Renderer {
         canvas_h: f64,
     ) {
         {
-            let mut cache = self.cache.borrow_mut();
-            cache.retain(|sid, _| session.doc.get_stroke(*sid).is_some());
+            let mut sc = self.stroke_cache.borrow_mut();
+            sc.retain(|sid, _| session.doc.get_stroke(*sid).is_some());
+        }
+        {
+            let mut ic = self.image_cache.borrow_mut();
+            ic.retain(|aid, _| session.doc.get_asset(*aid).is_some());
         }
         let dpr = vp.dpr as f64;
         let _ = self.ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
         self.clear(canvas_w, canvas_h);
         self.draw_paper(vp, canvas_w, canvas_h, &session.doc);
-        self.draw_strokes(session, vp);
+        self.draw_items(session, vp);
         if !preview.is_empty() {
             self.draw_preview(preview, &session.active_brush, vp);
         }
         if !lasso_poly.is_empty() {
             self.draw_lasso(lasso_poly, vp);
         }
+        self.draw_selection_overlay(session, vp);
     }
 
     fn clear(&self, w: f64, h: f64) {
@@ -158,10 +172,10 @@ impl Renderer {
         }
     }
 
-    fn draw_strokes(&self, session: &InkSession, vp: &Viewport) {
+    fn draw_items(&self, session: &InkSession, vp: &Viewport) {
         let visible = vp.visible_world_bbox();
         let candidates = session.doc.query_bbox(visible);
-        let candidate_set: std::collections::HashSet<stonepen_core::ids::StrokeId> =
+        let candidate_set: std::collections::HashSet<stonepen_core::ids::ItemId> =
             candidates.into_iter().collect();
         for layer in &session.doc.layers {
             if !layer.visible {
@@ -169,12 +183,99 @@ impl Renderer {
             }
             let layer_opacity = layer.opacity as f64;
             self.ctx.set_global_alpha(layer_opacity);
-            for stroke in &layer.strokes {
-                if !candidate_set.contains(&stroke.id) {
+            for item in &layer.items {
+                if !candidate_set.contains(&item.id()) {
                     continue;
                 }
-                let is_sel = session.doc.runtime.sel_strokes.contains(&stroke.id);
-                self.draw_stroke(stroke, vp, is_sel);
+                match item {
+                    InkItem::Stroke(stroke) => {
+                        self.draw_stroke(stroke, vp);
+                    }
+                    InkItem::Image(img) => {
+                        if let Some(asset) = session.doc.get_asset(img.asset_id) {
+                            let mut cache = self.image_cache.borrow_mut();
+                            let entry = cache.entry(img.asset_id).or_insert_with(|| {
+                                let html_img = HtmlImageElement::new().unwrap();
+                                let array = unsafe { js_sys::Uint8Array::view(&asset.bytes) };
+                                let parts = js_sys::Array::new();
+                                parts.push(&array);
+                                let property_bag = web_sys::BlobPropertyBag::new();
+                                property_bag.set_type(&asset.mime);
+                                let blob = web_sys::Blob::new_with_blob_sequence_and_options(
+                                    &parts,
+                                    &property_bag,
+                                )
+                                .unwrap();
+                                let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
+                                html_img.set_src(&url);
+
+                                let canvas_clone = self.ctx.canvas().unwrap();
+                                let closure =
+                                    wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                                        let _ = canvas_clone.dispatch_event(
+                                            &web_sys::Event::new("redraw").unwrap(),
+                                        );
+                                    })
+                                        as Box<dyn FnMut()>);
+                                html_img.set_onload(Some(closure.as_ref().unchecked_ref()));
+                                ImageCacheEntry {
+                                    img: html_img,
+                                    _closure: closure,
+                                }
+                            });
+
+                            if entry.img.complete() {
+                                let _ = self.ctx.save();
+                                let m = img.xform;
+                                // Convert world xform to screen coordinates and apply
+                                let sp = vp.world_to_screen(Point2::new(m.tx, m.ty));
+                                let s_scale = vp.zoom;
+                                let _ = self.ctx.translate(sp.x as f64, sp.y as f64);
+                                let _ = self.ctx.transform(
+                                    (m.a) as f64,
+                                    (m.b) as f64,
+                                    (m.c) as f64,
+                                    (m.d) as f64,
+                                    0.0,
+                                    0.0,
+                                );
+                                let _ = self.ctx.scale(s_scale as f64, s_scale as f64);
+                                let _ = self.ctx.draw_image_with_html_image_element_and_dw_and_dh(
+                                    &entry.img,
+                                    0.0,
+                                    0.0,
+                                    img.width as f64,
+                                    img.height as f64,
+                                );
+                                let _ = self.ctx.restore();
+                            } else {
+                                // Draw dashed placeholder while loading
+                                let corners = [
+                                    img.xform.apply(Point2::new(0.0, 0.0)),
+                                    img.xform.apply(Point2::new(img.width, 0.0)),
+                                    img.xform.apply(Point2::new(img.width, img.height)),
+                                    img.xform.apply(Point2::new(0.0, img.height)),
+                                ];
+                                let sps: Vec<Point2> =
+                                    corners.iter().map(|&p| vp.world_to_screen(p)).collect();
+                                self.ctx.set_stroke_style_str("rgba(160,160,160,0.5)");
+                                self.ctx.set_line_width(1.0);
+                                let _ = self.ctx.set_line_dash(&js_sys::Array::of2(
+                                    &wasm_bindgen::JsValue::from(4.0),
+                                    &wasm_bindgen::JsValue::from(4.0),
+                                ));
+                                self.ctx.begin_path();
+                                self.ctx.move_to(sps[0].x as f64, sps[0].y as f64);
+                                for p in sps.iter().skip(1) {
+                                    self.ctx.line_to(p.x as f64, p.y as f64);
+                                }
+                                self.ctx.close_path();
+                                self.ctx.stroke();
+                                let _ = self.ctx.set_line_dash(&js_sys::Array::new());
+                            }
+                        }
+                    }
+                }
             }
         }
         self.ctx.set_global_alpha(1.0);
@@ -203,7 +304,7 @@ impl Renderer {
         let effective_zoom = vp.zoom * stonepen_core::geom::xform_scale(xform);
         let zoom_bucket = (effective_zoom.log2() * 4.0).round() as i32;
         let outline = if let Some((id, geom_rev)) = stroke_id_opt {
-            let mut cache = self.cache.borrow_mut();
+            let mut cache = self.stroke_cache.borrow_mut();
             let entry = cache
                 .entry(id)
                 .or_insert_with(|| StrokeCacheEntry::new(geom_rev));
@@ -254,7 +355,7 @@ impl Renderer {
         self.ctx.fill();
     }
 
-    fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport, selected: bool) {
+    fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport) {
         self.draw_pts(
             &stroke.pts,
             &stroke.brush,
@@ -262,28 +363,6 @@ impl Renderer {
             vp,
             Some((stroke.id, stroke.geom_rev)),
         );
-        if selected {
-            self.draw_selection_outline(stroke, vp);
-        }
-    }
-
-    fn draw_selection_outline(&self, stroke: &InkStroke, vp: &Viewport) {
-        let bbox = stroke.world_bbox;
-        let tl = vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
-        let br = vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
-        let x = tl.x as f64 - 3.0;
-        let y = tl.y as f64 - 3.0;
-        let w = (br.x - tl.x) as f64 + 6.0;
-        let h = (br.y - tl.y) as f64 + 6.0;
-        self.ctx.set_stroke_style_str("rgba(60,120,220,0.7)");
-        self.ctx.set_line_width(1.5);
-        self.ctx.set_line_dash_offset(0.0);
-        let _ = self.ctx.set_line_dash(&js_sys::Array::of2(
-            &wasm_bindgen::JsValue::from(4.0),
-            &wasm_bindgen::JsValue::from(3.0),
-        ));
-        self.ctx.stroke_rect(x, y, w, h);
-        let _ = self.ctx.set_line_dash(&js_sys::Array::new());
     }
 
     fn draw_preview(&self, pts: &[InkPoint], brush: &stonepen_core::brush::Brush, vp: &Viewport) {
@@ -318,5 +397,55 @@ impl Renderer {
         self.ctx.fill();
         self.ctx.stroke();
         let _ = self.ctx.set_line_dash(&js_sys::Array::new());
+    }
+
+    fn draw_selection_overlay(&self, session: &InkSession, vp: &Viewport) {
+        let bbox = match session.doc.selection_bbox() {
+            Some(b) => b,
+            None => return,
+        };
+        let tl = vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
+        let br = vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
+        let x = tl.x as f64;
+        let y = tl.y as f64;
+        let w = (br.x - tl.x) as f64;
+        let h = (br.y - tl.y) as f64;
+
+        // Draw bounding box
+        self.ctx.set_stroke_style_str("rgba(60,120,220,0.85)");
+        self.ctx.set_line_width(1.5);
+        self.ctx.stroke_rect(x, y, w, h);
+
+        // Draw handles in screen space
+        self.ctx.set_fill_style_str("#ffffff");
+        self.ctx.set_stroke_style_str("#3b78dc");
+        self.ctx.set_line_width(2.0);
+
+        let h_size = 10.0;
+        let h_half = h_size * 0.5;
+
+        let draw_corner = |cx: f64, cy: f64| {
+            self.ctx.fill_rect(cx - h_half, cy - h_half, h_size, h_size);
+            self.ctx
+                .stroke_rect(cx - h_half, cy - h_half, h_size, h_size);
+        };
+
+        draw_corner(x, y);
+        draw_corner(x + w, y);
+        draw_corner(x + w, y + h);
+        draw_corner(x, y + h);
+
+        // Draw rotation handle
+        let rx = x + w * 0.5;
+        let ry = y - 25.0;
+        self.ctx.begin_path();
+        self.ctx.move_to(rx, y);
+        self.ctx.line_to(rx, ry);
+        self.ctx.stroke();
+
+        self.ctx.begin_path();
+        let _ = self.ctx.arc(rx, ry, 5.0, 0.0, std::f64::consts::TAU);
+        self.ctx.fill();
+        self.ctx.stroke();
     }
 }

@@ -29,6 +29,7 @@ features = [
   "HtmlAnchorElement",
   "HtmlCanvasElement",
   "HtmlElement",
+  "HtmlImageElement",
   "HtmlInputElement",
   "KeyboardEvent",
   "MouseEvent",

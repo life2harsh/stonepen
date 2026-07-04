@@ -1,10 +1,13 @@
+use stonepen_core::bbox::BBox;
 use stonepen_core::brush::Brush;
-use stonepen_core::ids::LayerId;
+use stonepen_core::ids::{AssetId, ItemId, LayerId};
+use stonepen_core::item::{ImageAsset, InkItem};
 use stonepen_core::ops::{InkOp, InkTx};
 use stonepen_core::point::{InkPoint, Point2, PointerKind};
 use stonepen_core::session::{InkSession, Tool};
-use stonepen_core::stroke::{InkStroke, StrokeBuilder};
+use stonepen_core::stroke::StrokeBuilder;
 use stonepen_core::viewport::Viewport;
+use stonepen_core::xform::Xform2D;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 
@@ -14,6 +17,15 @@ use crate::keyboard::parse_key;
 use crate::pointer::{get_inputs, PointerInput};
 use crate::render_2d::Renderer;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelHandle {
+    TopLeft,
+    TopRight,
+    BottomRight,
+    BottomLeft,
+    Rotate,
+}
+
 pub enum InputState {
     Idle,
     Drawing {
@@ -22,7 +34,7 @@ pub enum InputState {
     },
     Erasing {
         ptr_id: i32,
-        erased: Vec<(LayerId, InkStroke)>,
+        erased: Vec<(LayerId, usize, InkItem)>,
     },
     Lassoing {
         ptr_id: i32,
@@ -32,6 +44,23 @@ pub enum InputState {
         ptr_id: i32,
         last_sx: f32,
         last_sy: f32,
+    },
+    MovingSel {
+        ptr_id: i32,
+        start_world: Point2,
+        before: Vec<(ItemId, Xform2D)>,
+    },
+    ScalingSel {
+        ptr_id: i32,
+        pivot: Point2,
+        start_world: Point2,
+        before: Vec<(ItemId, Xform2D)>,
+    },
+    RotatingSel {
+        ptr_id: i32,
+        pivot: Point2,
+        start_angle: f32,
+        before: Vec<(ItemId, Xform2D)>,
     },
 }
 
@@ -109,12 +138,107 @@ impl StonepenApp {
                     polygon: vec![world],
                 };
             }
-            Tool::Pan | Tool::Select => {
+            Tool::Pan => {
                 self.input = InputState::Panning {
                     ptr_id: pi.id,
                     last_sx: pi.x,
                     last_sy: pi.y,
                 };
+            }
+            Tool::Select => {
+                let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+                let sel: Vec<ItemId> = self.session.doc.runtime.sel_items.iter().copied().collect();
+
+                let mut hit_handle_enum: Option<SelHandle> = None;
+                let mut handle_pivot = Point2::new(0.0, 0.0);
+                let start_world = world_pos;
+
+                if let Some(bbox) = self.session.doc.selection_bbox() {
+                    let tl = self.vp.world_to_screen(Point2::new(bbox.min_x, bbox.min_y));
+                    let br = self.vp.world_to_screen(Point2::new(bbox.max_x, bbox.max_y));
+                    let x = tl.x;
+                    let y = tl.y;
+                    let w = br.x - tl.x;
+                    let h = br.y - tl.y;
+
+                    let handle_radius = 12.0f32;
+                    let hit_handle = |hx: f32, hy: f32| -> bool {
+                        let dx = pi.x - hx;
+                        let dy = pi.y - hy;
+                        dx * dx + dy * dy <= handle_radius * handle_radius
+                    };
+
+                    if hit_handle(x, y) {
+                        hit_handle_enum = Some(SelHandle::TopLeft);
+                        handle_pivot = Point2::new(bbox.max_x, bbox.max_y);
+                    } else if hit_handle(x + w, y) {
+                        hit_handle_enum = Some(SelHandle::TopRight);
+                        handle_pivot = Point2::new(bbox.min_x, bbox.max_y);
+                    } else if hit_handle(x + w, y + h) {
+                        hit_handle_enum = Some(SelHandle::BottomRight);
+                        handle_pivot = Point2::new(bbox.min_x, bbox.min_y);
+                    } else if hit_handle(x, y + h) {
+                        hit_handle_enum = Some(SelHandle::BottomLeft);
+                        handle_pivot = Point2::new(bbox.max_x, bbox.min_y);
+                    } else if hit_handle(x + w * 0.5, y - 25.0) {
+                        hit_handle_enum = Some(SelHandle::Rotate);
+                        handle_pivot = Point2::new(
+                            (bbox.min_x + bbox.max_x) * 0.5,
+                            (bbox.min_y + bbox.max_y) * 0.5,
+                        );
+                    }
+                }
+
+                if let Some(handle) = hit_handle_enum {
+                    let before = sel
+                        .iter()
+                        .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                        .collect();
+                    if handle == SelHandle::Rotate {
+                        let d = world_pos - handle_pivot;
+                        let start_angle = d.y.atan2(d.x);
+                        self.input = InputState::RotatingSel {
+                            ptr_id: pi.id,
+                            pivot: handle_pivot,
+                            start_angle,
+                            before,
+                        };
+                    } else {
+                        self.input = InputState::ScalingSel {
+                            ptr_id: pi.id,
+                            pivot: handle_pivot,
+                            start_world,
+                            before,
+                        };
+                    }
+                } else {
+                    let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
+                    if let Some(id) = clicked {
+                        if self.session.doc.runtime.sel_items.contains(&id) {
+                            let before = sel
+                                .iter()
+                                .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                                .collect();
+                            self.input = InputState::MovingSel {
+                                ptr_id: pi.id,
+                                start_world,
+                                before,
+                            };
+                        } else {
+                            self.session.doc.clear_sel();
+                            self.session.doc.runtime.sel_items.insert(id);
+                            let before = vec![(id, self.session.doc.get_item(id).unwrap().xform())];
+                            self.input = InputState::MovingSel {
+                                ptr_id: pi.id,
+                                start_world,
+                                before,
+                            };
+                        }
+                    } else {
+                        self.session.doc.clear_sel();
+                        self.input = InputState::Idle;
+                    }
+                }
             }
         }
         self.redraw();
@@ -168,6 +292,62 @@ impl StonepenApp {
                 *last_sx = pi.x;
                 *last_sy = pi.y;
             }
+            InputState::MovingSel {
+                ptr_id: id,
+                start_world,
+                before,
+            } if *id == ptr_id => {
+                let pi = &inputs[inputs.len() - 1];
+                let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+                let delta = world_pos - *start_world;
+                let xf = Xform2D::translate(delta.x, delta.y);
+                for (item_id, start_xf) in before {
+                    if let Some(item) = self.session.doc.get_item_mut(*item_id) {
+                        item.set_xform(xf.concat(*start_xf));
+                    }
+                }
+            }
+            InputState::ScalingSel {
+                ptr_id: id,
+                pivot,
+                start_world,
+                before,
+            } if *id == ptr_id => {
+                let pi = &inputs[inputs.len() - 1];
+                let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+                let start_dist = (*start_world - *pivot).len();
+                let curr_dist = (world_pos - *pivot).len();
+                let scale = if start_dist > 1e-4 {
+                    curr_dist / start_dist
+                } else {
+                    1.0
+                };
+                let scale = scale.max(0.05);
+                let xf = Xform2D::scale_about(*pivot, scale, scale);
+                for (item_id, start_xf) in before {
+                    if let Some(item) = self.session.doc.get_item_mut(*item_id) {
+                        item.set_xform(xf.concat(*start_xf));
+                    }
+                }
+            }
+            InputState::RotatingSel {
+                ptr_id: id,
+                pivot,
+                start_angle,
+                before,
+            } if *id == ptr_id => {
+                let pi = &inputs[inputs.len() - 1];
+                let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+                let d = world_pos - *pivot;
+                let curr_angle = d.y.atan2(d.x);
+                let delta_angle = curr_angle - *start_angle;
+                let xf = Xform2D::rotate_about(*pivot, delta_angle);
+                for (item_id, start_xf) in before {
+                    if let Some(item) = self.session.doc.get_item_mut(*item_id) {
+                        item.set_xform(xf.concat(*start_xf));
+                    }
+                }
+            }
             _ => return,
         }
         self.redraw();
@@ -181,6 +361,9 @@ impl StonepenApp {
             InputState::Lassoing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Erasing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Panning { ptr_id: id, .. } => *id == ptr_id,
+            InputState::MovingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::ScalingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::RotatingSel { ptr_id: id, .. } => *id == ptr_id,
             InputState::Idle => false,
         };
         if !finishing {
@@ -215,10 +398,30 @@ impl StonepenApp {
             }
             InputState::Erasing { erased, .. } => {
                 if !erased.is_empty() {
-                    let tx = InkTx::new("erase").push(InkOp::DeleteStrokes { strokes: erased });
-                    self.session.undo_redo.push(tx);
-                    self.session.rev += 1;
-                    self.session.dirty = true;
+                    let tx = InkTx::new("erase").push(InkOp::DeleteItems { items: erased });
+                    self.session.do_tx(tx);
+                }
+            }
+            InputState::MovingSel { before, .. }
+            | InputState::ScalingSel { before, .. }
+            | InputState::RotatingSel { before, .. } => {
+                let mut item_ids = Vec::new();
+                let mut before_xfs = Vec::new();
+                let mut after_xfs = Vec::new();
+                for (id, start_xf) in before {
+                    if let Some(item) = self.session.doc.get_item(id) {
+                        item_ids.push(id);
+                        before_xfs.push(start_xf);
+                        after_xfs.push(item.xform());
+                    }
+                }
+                if !item_ids.is_empty() && before_xfs != after_xfs {
+                    let tx = InkTx::new("transform selection").push(InkOp::TransformItems {
+                        item_ids,
+                        before: before_xfs,
+                        after: after_xfs,
+                    });
+                    self.session.do_tx(tx);
                 }
             }
             InputState::Panning { .. } => {}
@@ -235,20 +438,30 @@ impl StonepenApp {
             InputState::Lassoing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Erasing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Panning { ptr_id: id, .. } => *id == ptr_id,
+            InputState::MovingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::ScalingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::RotatingSel { ptr_id: id, .. } => *id == ptr_id,
             InputState::Idle => false,
         };
         if cancel {
-            if let InputState::Erasing { erased, .. } =
-                std::mem::replace(&mut self.input, InputState::Idle)
-            {
-                if !erased.is_empty() {
-                    let tx = InkTx::new("erase").push(InkOp::DeleteStrokes { strokes: erased });
-                    self.session.undo_redo.push(tx);
-                    self.session.rev += 1;
-                    self.session.dirty = true;
+            let old_state = std::mem::replace(&mut self.input, InputState::Idle);
+            match old_state {
+                InputState::Erasing { erased, .. } => {
+                    if !erased.is_empty() {
+                        let tx = InkTx::new("erase").push(InkOp::DeleteItems { items: erased });
+                        self.session.do_tx(tx);
+                    }
                 }
-            } else {
-                self.input = InputState::Idle;
+                InputState::MovingSel { before, .. }
+                | InputState::ScalingSel { before, .. }
+                | InputState::RotatingSel { before, .. } => {
+                    for (id, start_xf) in before {
+                        if let Some(item) = self.session.doc.get_item_mut(id) {
+                            item.set_xform(start_xf);
+                        }
+                    }
+                }
+                _ => {}
             }
             self.preview_pts.clear();
             self.lasso_preview.clear();
@@ -269,7 +482,7 @@ impl StonepenApp {
 
     pub fn on_key(&mut self, e: &KeyboardEvent) {
         let action = parse_key(e);
-        if action.undo || action.redo || action.delete || action.escape {
+        if action.undo || action.redo || action.delete || action.escape || action.duplicate {
             e.prevent_default();
         }
         if action.undo {
@@ -284,6 +497,8 @@ impl StonepenApp {
             if matches!(self.input, InputState::Lassoing { .. }) {
                 self.input = InputState::Idle;
             }
+        } else if action.duplicate {
+            self.session.duplicate_sel();
         }
         self.update_status();
         self.redraw();
@@ -306,6 +521,7 @@ impl StonepenApp {
             "eraser" => Tool::StrokeEraser,
             "lasso" => Tool::Lasso,
             "pan" => Tool::Pan,
+            "select" => Tool::Select,
             _ => Tool::Pen,
         };
         self.update_status();
@@ -403,23 +619,88 @@ impl StonepenApp {
         );
     }
 
-    fn erase_at_collect(&mut self, pos: Point2, radius: f32) -> Vec<(LayerId, InkStroke)> {
+    pub fn paste_image(&mut self, bytes: &[u8], mime: &str, width_px: u32, height_px: u32) {
+        let asset_id = AssetId::new();
+        let asset = ImageAsset {
+            id: asset_id,
+            mime: mime.to_string(),
+            width_px,
+            height_px,
+            bytes: bytes.to_vec(),
+        };
+        let visible = self.vp.visible_world_bbox();
+        let v_w = visible.max_x - visible.min_x;
+        let v_h = visible.max_y - visible.min_y;
+        let mut w = width_px as f32;
+        let mut h = height_px as f32;
+        let max_w = v_w * 0.8;
+        let max_h = v_h * 0.8;
+        if w > max_w || h > max_h {
+            let scale = (max_w / w).min(max_h / h);
+            w *= scale;
+            h *= scale;
+        }
+        let center = Point2::new(
+            (visible.min_x + visible.max_x) * 0.5,
+            (visible.min_y + visible.max_y) * 0.5,
+        );
+        let x = center.x - w * 0.5;
+        let y = center.y - h * 0.5;
+        let xform = Xform2D::translate(x, y);
+        let item_id = ItemId::new();
+        let mut img_item = stonepen_core::item::InkImage {
+            id: item_id,
+            asset_id,
+            width: w,
+            height: h,
+            opacity: 1.0,
+            xform,
+            local_bbox: BBox::new(0.0, 0.0, w, h),
+            world_bbox: BBox::new(0.0, 0.0, w, h),
+            created_at_ms: js_sys::Date::now() as i64,
+            updated_at_ms: js_sys::Date::now() as i64,
+            geom_rev: 0,
+        };
+        img_item.recompute_world_bbox();
+
+        let layer_id = self.session.doc.active_layer_id;
+        let insert_idx = self
+            .session
+            .doc
+            .active_layer()
+            .map(|l| l.items.len())
+            .unwrap_or(0);
+        let tx = InkTx::new("paste image")
+            .push(InkOp::AddAsset { asset })
+            .push(InkOp::AddItems {
+                layer_id,
+                items: vec![(insert_idx, InkItem::Image(img_item))],
+            });
+        self.session.do_tx(tx);
+
+        self.session.doc.clear_sel();
+        self.session.doc.runtime.sel_items.insert(item_id);
+        self.update_status();
+        self.redraw();
+    }
+
+    fn erase_at_collect(&mut self, pos: Point2, radius: f32) -> Vec<(LayerId, usize, InkItem)> {
         let candidates = self.session.doc.hit_eraser(pos, radius);
         if candidates.is_empty() {
             return Vec::new();
         }
         let mut to_delete = Vec::new();
-        for sid in candidates {
-            if let Some(s) = self.session.doc.get_stroke(sid) {
+        for id in candidates {
+            if let Some(InkItem::Stroke(s)) = self.session.doc.get_item(id) {
                 if stonepen_core::hit::stroke_hit(s, pos, radius) {
-                    to_delete.push(sid);
+                    to_delete.push(id);
                 }
             }
         }
         if to_delete.is_empty() {
             return Vec::new();
         }
-        self.session.doc.delete_strokes(&to_delete)
+        self.session.doc.delete_items(&to_delete)
     }
 
     fn update_status(&self) {
@@ -431,14 +712,8 @@ impl StonepenApp {
             Some(d) => d,
             None => return,
         };
-        let total: usize = self
-            .session
-            .doc
-            .layers
-            .iter()
-            .map(|l| l.strokes.len())
-            .sum();
-        let sel = self.session.doc.runtime.sel_strokes.len();
+        let total: usize = self.session.doc.layers.iter().map(|l| l.items.len()).sum();
+        let sel = self.session.doc.runtime.sel_items.len();
         let tool_str = match self.session.active_tool {
             Tool::Pen => "Pen",
             Tool::Pencil => "Pencil",
@@ -455,7 +730,7 @@ impl StonepenApp {
             "saved"
         };
         let status = format!(
-            "strokes: {total}  selected: {sel}  tool: {tool_str}  zoom: {zoom_pct}%  {dirty_str}"
+            "items: {total}  selected: {sel}  tool: {tool_str}  zoom: {zoom_pct}%  {dirty_str}"
         );
         if let Some(el) = document.get_element_by_id("status-bar") {
             el.set_text_content(Some(&status));

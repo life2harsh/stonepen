@@ -36,6 +36,42 @@ impl Xform2D {
         }
     }
 
+    pub fn rotate(angle_rad: f32) -> Self {
+        let cos = angle_rad.cos();
+        let sin = angle_rad.sin();
+        Self {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            tx: 0.0,
+            ty: 0.0,
+        }
+    }
+
+    pub fn scale(sx: f32, sy: f32) -> Self {
+        Self {
+            a: sx,
+            b: 0.0,
+            c: 0.0,
+            d: sy,
+            tx: 0.0,
+            ty: 0.0,
+        }
+    }
+
+    pub fn scale_about(pivot: Point2, sx: f32, sy: f32) -> Self {
+        Self::translate(pivot.x, pivot.y)
+            .concat(Self::scale(sx, sy))
+            .concat(Self::translate(-pivot.x, -pivot.y))
+    }
+
+    pub fn rotate_about(pivot: Point2, angle_rad: f32) -> Self {
+        Self::translate(pivot.x, pivot.y)
+            .concat(Self::rotate(angle_rad))
+            .concat(Self::translate(-pivot.x, -pivot.y))
+    }
+
     pub fn apply(self, p: Point2) -> Point2 {
         Point2 {
             x: self.a * p.x + self.c * p.y + self.tx,
@@ -73,10 +109,29 @@ impl Xform2D {
             max_y,
         }
     }
+
+    pub fn inverse(self) -> Option<Self> {
+        let det = self.a * self.d - self.b * self.c;
+        if det.abs() < 1e-6 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        let a = self.d * inv_det;
+        let b = -self.b * inv_det;
+        let c = -self.c * inv_det;
+        let d = self.a * inv_det;
+        let tx = -(a * self.tx + c * self.ty);
+        let ty = -(b * self.tx + d * self.ty);
+        Some(Self { a, b, c, d, tx, ty })
+    }
 }
 
 impl Default for Xform2D {
     fn default() -> Self {
         Self::identity()
     }
+}
+
+pub fn xform_scale(xf: Xform2D) -> f32 {
+    (xf.a * xf.d - xf.b * xf.c).abs().sqrt()
 }

@@ -158,6 +158,10 @@ button:focus-visible {
   cursor: default;
 }
 
+#ink-canvas.tool-select {
+  cursor: default;
+}
+
 #status-bar {
   background: var(--status-bg);
   color: var(--status-text);

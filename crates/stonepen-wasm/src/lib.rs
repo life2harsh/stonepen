@@ -93,4 +93,8 @@ impl WasmApp {
     pub fn redraw(&self) {
         self.inner.redraw();
     }
+
+    pub fn paste_image(&mut self, bytes: &[u8], mime: &str, width_px: u32, height_px: u32) {
+        self.inner.paste_image(bytes, mime, width_px, height_px);
+    }
 }
