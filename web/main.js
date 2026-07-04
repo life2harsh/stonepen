@@ -11,7 +11,10 @@ async function main() {
   canvas.addEventListener("pointerup", (e) => { e.preventDefault(); app.on_pointer_up(e); });
   canvas.addEventListener("pointercancel", (e) => { app.on_pointer_cancel(e); });
   canvas.addEventListener("wheel", (e) => { e.preventDefault(); app.on_wheel(e); }, { passive: false });
-  canvas.addEventListener("keydown", (e) => { app.on_key(e); });
+  window.addEventListener("keydown", (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    app.on_key(e);
+  });
 
   const toolBtns = document.querySelectorAll(".tool-btn");
   toolBtns.forEach((btn) => {

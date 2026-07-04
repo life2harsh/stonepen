@@ -26,7 +26,7 @@ impl Renderer {
     ) {
         self.clear(canvas_w, canvas_h);
         self.draw_paper(vp, canvas_w, canvas_h, &session.doc);
-        self.draw_strokes(session, vp, canvas_w, canvas_h);
+        self.draw_strokes(session, vp);
         if !preview.is_empty() {
             self.draw_preview(preview, &session.active_brush, vp);
         }
@@ -116,7 +116,7 @@ impl Renderer {
         }
     }
 
-    fn draw_strokes(&self, session: &InkSession, vp: &Viewport, _canvas_w: f64, _canvas_h: f64) {
+    fn draw_strokes(&self, session: &InkSession, vp: &Viewport) {
         let visible = vp.visible_world_bbox();
         let candidates = session.doc.query_bbox(visible);
         let candidate_set: std::collections::HashSet<stonepen_core::ids::StrokeId> =
@@ -138,43 +138,69 @@ impl Renderer {
         self.ctx.set_global_alpha(1.0);
     }
 
+    fn stroke_style_str(brush: &stonepen_core::brush::Brush) -> String {
+        let color = &brush.color;
+        let opacity = match brush.kind {
+            BrushKind::Highlighter => (brush.opacity * 0.6).min(0.55) as f64,
+            _ => brush.opacity as f64,
+        };
+        format!("rgba({},{},{},{:.3})", color.r, color.g, color.b, opacity)
+    }
+
     fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport, selected: bool) {
         let pts = &stroke.pts;
         if pts.is_empty() {
             return;
         }
         let brush = &stroke.brush;
-        let color = &brush.color;
-        let base_opacity = match brush.kind {
-            BrushKind::Highlighter => brush.opacity.min(0.5) as f64,
-            _ => brush.opacity as f64,
-        };
-        let stroke_style = format!(
-            "rgba({},{},{},{:.3})",
-            color.r, color.g, color.b, base_opacity
-        );
-        self.ctx.set_stroke_style_str(&stroke_style);
+        let style = Self::stroke_style_str(brush);
+        self.ctx.set_stroke_style_str(&style);
         self.ctx.set_line_cap("round");
         self.ctx.set_line_join("round");
-        self.ctx.begin_path();
         let xf = stroke.xform;
-        let first_world = Point2::new(
+        let dpr = vp.dpr as f64;
+        if pts.len() == 1 {
+            let world = Point2::new(
+                xf.a * pts[0].x + xf.c * pts[0].y + xf.tx,
+                xf.b * pts[0].x + xf.d * pts[0].y + xf.ty,
+            );
+            let sp = vp.world_to_screen(world);
+            let width =
+                (brush.base_w * pts[0].press.max(brush.min_press) * vp.zoom * vp.dpr) as f64;
+            self.ctx.set_line_width(width.max(0.5));
+            self.ctx.begin_path();
+            let _ = self.ctx.arc(
+                sp.x as f64,
+                sp.y as f64,
+                width * 0.5,
+                0.0,
+                std::f64::consts::TAU,
+            );
+            self.ctx.fill();
+            return;
+        }
+        let mut prev_world = Point2::new(
             xf.a * pts[0].x + xf.c * pts[0].y + xf.tx,
             xf.b * pts[0].x + xf.d * pts[0].y + xf.ty,
         );
-        let sp0 = vp.world_to_screen(first_world);
-        self.ctx.move_to(sp0.x as f64, sp0.y as f64);
+        let mut prev_sp = vp.world_to_screen(prev_world);
         for pt in pts.iter().skip(1) {
             let world = Point2::new(
                 xf.a * pt.x + xf.c * pt.y + xf.tx,
                 xf.b * pt.x + xf.d * pt.y + xf.ty,
             );
             let sp = vp.world_to_screen(world);
-            let width = (brush.base_w * pt.press.max(brush.min_press) * vp.zoom) as f64;
+            let width =
+                (brush.base_w * pt.press.max(brush.min_press) * vp.zoom * dpr as f32) as f64;
             self.ctx.set_line_width(width.max(0.5));
+            self.ctx.begin_path();
+            self.ctx.move_to(prev_sp.x as f64, prev_sp.y as f64);
             self.ctx.line_to(sp.x as f64, sp.y as f64);
+            self.ctx.stroke();
+            prev_world = world;
+            prev_sp = sp;
         }
-        self.ctx.stroke();
+        let _ = prev_world;
         if selected {
             self.draw_selection_outline(stroke, vp);
         }
@@ -203,28 +229,39 @@ impl Renderer {
         if pts.is_empty() {
             return;
         }
-        let color = &brush.color;
-        let base_opacity = match brush.kind {
-            BrushKind::Highlighter => brush.opacity.min(0.5) as f64,
-            _ => brush.opacity as f64,
-        };
-        let stroke_style = format!(
-            "rgba({},{},{},{:.3})",
-            color.r, color.g, color.b, base_opacity
-        );
-        self.ctx.set_stroke_style_str(&stroke_style);
+        let style = Self::stroke_style_str(brush);
+        self.ctx.set_stroke_style_str(&style);
         self.ctx.set_line_cap("round");
         self.ctx.set_line_join("round");
-        self.ctx.begin_path();
-        let sp0 = vp.world_to_screen(pts[0].pos());
-        self.ctx.move_to(sp0.x as f64, sp0.y as f64);
+        let dpr = vp.dpr as f64;
+        if pts.len() == 1 {
+            let sp = vp.world_to_screen(pts[0].pos());
+            let width =
+                (brush.base_w * pts[0].press.max(brush.min_press) * vp.zoom * vp.dpr) as f64;
+            self.ctx.set_line_width(width.max(0.5));
+            self.ctx.begin_path();
+            let _ = self.ctx.arc(
+                sp.x as f64,
+                sp.y as f64,
+                width * 0.5,
+                0.0,
+                std::f64::consts::TAU,
+            );
+            self.ctx.fill();
+            return;
+        }
+        let mut prev_sp = vp.world_to_screen(pts[0].pos());
         for pt in pts.iter().skip(1) {
             let sp = vp.world_to_screen(pt.pos());
-            let width = (brush.base_w * pt.press.max(brush.min_press) * vp.zoom) as f64;
+            let width =
+                (brush.base_w * pt.press.max(brush.min_press) * vp.zoom * dpr as f32) as f64;
             self.ctx.set_line_width(width.max(0.5));
+            self.ctx.begin_path();
+            self.ctx.move_to(prev_sp.x as f64, prev_sp.y as f64);
             self.ctx.line_to(sp.x as f64, sp.y as f64);
+            self.ctx.stroke();
+            prev_sp = sp;
         }
-        self.ctx.stroke();
     }
 
     fn draw_lasso(&self, poly: &[Point2], vp: &Viewport) {

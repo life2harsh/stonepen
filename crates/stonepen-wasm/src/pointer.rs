@@ -1,6 +1,5 @@
 use stonepen_core::point::{InkPoint, PointerKind};
 use stonepen_core::viewport::Viewport;
-use wasm_bindgen::JsCast;
 use web_sys::PointerEvent;
 
 pub struct PointerInput {
@@ -58,21 +57,6 @@ pub fn parse_pointer_kind(s: &str) -> PointerKind {
     }
 }
 
-pub fn coalesced_inputs(e: &PointerEvent) -> Vec<PointerInput> {
-    let coalesced = e.get_coalesced_events();
-    let len = coalesced.length();
-    if len == 0 {
-        return vec![PointerInput::from_event(e)];
-    }
-    let mut out = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        let val = coalesced.get(i);
-        if let Ok(pe) = val.dyn_into::<PointerEvent>() {
-            out.push(PointerInput::from_event(&pe));
-        }
-    }
-    if out.is_empty() {
-        out.push(PointerInput::from_event(e));
-    }
-    out
+pub fn get_inputs(e: &PointerEvent) -> Vec<PointerInput> {
+    vec![PointerInput::from_event(e)]
 }

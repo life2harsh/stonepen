@@ -1,6 +1,9 @@
+use stonepen_core::brush::Brush;
+use stonepen_core::ids::LayerId;
+use stonepen_core::ops::{InkOp, InkTx};
 use stonepen_core::point::{InkPoint, Point2, PointerKind};
 use stonepen_core::session::{InkSession, Tool};
-use stonepen_core::stroke::StrokeBuilder;
+use stonepen_core::stroke::{InkStroke, StrokeBuilder};
 use stonepen_core::viewport::Viewport;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
@@ -8,7 +11,7 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 use crate::canvas::{get_2d_context, get_canvas, sync_canvas_size};
 use crate::file_io::{trigger_download, trigger_png_download};
 use crate::keyboard::parse_key;
-use crate::pointer::{coalesced_inputs, PointerInput};
+use crate::pointer::{get_inputs, PointerInput};
 use crate::render_2d::Renderer;
 
 pub enum InputState {
@@ -19,6 +22,7 @@ pub enum InputState {
     },
     Erasing {
         ptr_id: i32,
+        erased: Vec<(LayerId, InkStroke)>,
     },
     Lassoing {
         ptr_id: i32,
@@ -91,8 +95,11 @@ impl StonepenApp {
             }
             Tool::StrokeEraser => {
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
-                self.session.erase_at(world, 8.0);
-                self.input = InputState::Erasing { ptr_id: pi.id };
+                let erased = self.erase_at_collect(world, 12.0);
+                self.input = InputState::Erasing {
+                    ptr_id: pi.id,
+                    erased,
+                };
             }
             Tool::Lasso => {
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
@@ -115,8 +122,20 @@ impl StonepenApp {
 
     pub fn on_pointer_move(&mut self, e: &PointerEvent) {
         e.prevent_default();
-        let inputs = coalesced_inputs(e);
+        let inputs = get_inputs(e);
         let ptr_id = e.pointer_id();
+        let is_erasing =
+            matches!(&self.input, InputState::Erasing { ptr_id: id, .. } if *id == ptr_id);
+        if is_erasing {
+            let pi = &inputs[inputs.len() - 1];
+            let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+            let mut newly_erased = self.erase_at_collect(world, 12.0);
+            if let InputState::Erasing { erased, .. } = &mut self.input {
+                erased.append(&mut newly_erased);
+            }
+            self.redraw();
+            return;
+        }
         match &mut self.input {
             InputState::Drawing {
                 ptr_id: id,
@@ -127,11 +146,6 @@ impl StonepenApp {
                     builder.push(pt);
                 }
                 self.preview_pts = builder.preview_pts().to_vec();
-            }
-            InputState::Erasing { ptr_id: id } if *id == ptr_id => {
-                let pi = &inputs[inputs.len() - 1];
-                let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
-                self.session.erase_at(world, 8.0);
             }
             InputState::Lassoing {
                 ptr_id: id,
@@ -165,7 +179,7 @@ impl StonepenApp {
         let finishing = match &self.input {
             InputState::Drawing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Lassoing { ptr_id: id, .. } => *id == ptr_id,
-            InputState::Erasing { ptr_id: id } => *id == ptr_id,
+            InputState::Erasing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Panning { ptr_id: id, .. } => *id == ptr_id,
             InputState::Idle => false,
         };
@@ -185,7 +199,14 @@ impl StonepenApp {
                 self.session.select_lasso(&polygon);
                 self.lasso_preview.clear();
             }
-            InputState::Erasing { .. } => {}
+            InputState::Erasing { erased, .. } => {
+                if !erased.is_empty() {
+                    let tx = InkTx::new("erase").push(InkOp::DeleteStrokes { strokes: erased });
+                    self.session.undo_redo.push(tx);
+                    self.session.rev += 1;
+                    self.session.dirty = true;
+                }
+            }
             InputState::Panning { .. } => {}
             InputState::Idle => {}
         }
@@ -198,12 +219,23 @@ impl StonepenApp {
         let cancel = match &self.input {
             InputState::Drawing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Lassoing { ptr_id: id, .. } => *id == ptr_id,
-            InputState::Erasing { ptr_id: id } => *id == ptr_id,
+            InputState::Erasing { ptr_id: id, .. } => *id == ptr_id,
             InputState::Panning { ptr_id: id, .. } => *id == ptr_id,
             InputState::Idle => false,
         };
         if cancel {
-            self.input = InputState::Idle;
+            if let InputState::Erasing { erased, .. } =
+                std::mem::replace(&mut self.input, InputState::Idle)
+            {
+                if !erased.is_empty() {
+                    let tx = InkTx::new("erase").push(InkOp::DeleteStrokes { strokes: erased });
+                    self.session.undo_redo.push(tx);
+                    self.session.rev += 1;
+                    self.session.dirty = true;
+                }
+            } else {
+                self.input = InputState::Idle;
+            }
             self.preview_pts.clear();
             self.lasso_preview.clear();
             self.redraw();
@@ -245,9 +277,18 @@ impl StonepenApp {
 
     pub fn set_tool(&mut self, tool: &str) {
         self.session.active_tool = match tool {
-            "pen" => Tool::Pen,
-            "pencil" => Tool::Pencil,
-            "highlighter" => Tool::Highlighter,
+            "pen" => {
+                self.session.active_brush = Brush::default_pen();
+                Tool::Pen
+            }
+            "pencil" => {
+                self.session.active_brush = Brush::default_pencil();
+                Tool::Pencil
+            }
+            "highlighter" => {
+                self.session.active_brush = Brush::default_highlighter();
+                Tool::Highlighter
+            }
             "eraser" => Tool::StrokeEraser,
             "lasso" => Tool::Lasso,
             "pan" => Tool::Pan,
@@ -346,6 +387,25 @@ impl StonepenApp {
             canvas_w,
             canvas_h,
         );
+    }
+
+    fn erase_at_collect(&mut self, pos: Point2, radius: f32) -> Vec<(LayerId, InkStroke)> {
+        let candidates = self.session.doc.hit_eraser(pos, radius);
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        let mut to_delete = Vec::new();
+        for sid in candidates {
+            if let Some(s) = self.session.doc.get_stroke(sid) {
+                if stonepen_core::hit::stroke_hit(s, pos, radius) {
+                    to_delete.push(sid);
+                }
+            }
+        }
+        if to_delete.is_empty() {
+            return Vec::new();
+        }
+        self.session.doc.delete_strokes(&to_delete)
     }
 
     fn update_status(&self) {
