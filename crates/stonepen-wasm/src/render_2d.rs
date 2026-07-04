@@ -62,7 +62,9 @@ impl Renderer {
             while wy < world_bbox.max_y + spacing {
                 let sp = vp.world_to_screen(Point2::new(wx, wy));
                 self.ctx.begin_path();
-                let _ = self.ctx.arc(sp.x as f64, sp.y as f64, 1.2, 0.0, std::f64::consts::TAU);
+                let _ = self
+                    .ctx
+                    .arc(sp.x as f64, sp.y as f64, 1.2, 0.0, std::f64::consts::TAU);
                 self.ctx.fill();
                 wy += spacing;
             }
@@ -114,7 +116,7 @@ impl Renderer {
         }
     }
 
-    fn draw_strokes(&self, session: &InkSession, vp: &Viewport, canvas_w: f64, canvas_h: f64) {
+    fn draw_strokes(&self, session: &InkSession, vp: &Viewport, _canvas_w: f64, _canvas_h: f64) {
         let visible = vp.visible_world_bbox();
         let candidates = session.doc.query_bbox(visible);
         let candidate_set: std::collections::HashSet<stonepen_core::ids::StrokeId> =
@@ -189,19 +191,15 @@ impl Renderer {
         self.ctx.set_stroke_style_str("rgba(60,120,220,0.7)");
         self.ctx.set_line_width(1.5);
         self.ctx.set_line_dash_offset(0.0);
-        let _ = self.ctx.set_line_dash(
-            &js_sys::Array::of2(&wasm_bindgen::JsValue::from(4.0), &wasm_bindgen::JsValue::from(3.0)),
-        );
+        let _ = self.ctx.set_line_dash(&js_sys::Array::of2(
+            &wasm_bindgen::JsValue::from(4.0),
+            &wasm_bindgen::JsValue::from(3.0),
+        ));
         self.ctx.stroke_rect(x, y, w, h);
         let _ = self.ctx.set_line_dash(&js_sys::Array::new());
     }
 
-    fn draw_preview(
-        &self,
-        pts: &[InkPoint],
-        brush: &stonepen_core::brush::Brush,
-        vp: &Viewport,
-    ) {
+    fn draw_preview(&self, pts: &[InkPoint], brush: &stonepen_core::brush::Brush, vp: &Viewport) {
         if pts.is_empty() {
             return;
         }
@@ -236,9 +234,10 @@ impl Renderer {
         self.ctx.set_stroke_style_str("rgba(60,120,220,0.8)");
         self.ctx.set_fill_style_str("rgba(60,120,220,0.08)");
         self.ctx.set_line_width(1.5);
-        let _ = self.ctx.set_line_dash(
-            &js_sys::Array::of2(&wasm_bindgen::JsValue::from(5.0), &wasm_bindgen::JsValue::from(3.0)),
-        );
+        let _ = self.ctx.set_line_dash(&js_sys::Array::of2(
+            &wasm_bindgen::JsValue::from(5.0),
+            &wasm_bindgen::JsValue::from(3.0),
+        ));
         self.ctx.begin_path();
         let sp0 = vp.world_to_screen(poly[0]);
         self.ctx.move_to(sp0.x as f64, sp0.y as f64);

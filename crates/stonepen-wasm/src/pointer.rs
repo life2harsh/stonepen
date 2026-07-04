@@ -1,6 +1,6 @@
-use wasm_bindgen::JsCast;
 use stonepen_core::point::{InkPoint, PointerKind};
 use stonepen_core::viewport::Viewport;
+use wasm_bindgen::JsCast;
 use web_sys::PointerEvent;
 
 pub struct PointerInput {
@@ -13,7 +13,7 @@ pub struct PointerInput {
     pub tilt_y: f32,
     pub twist: f32,
     pub t_ms: f64,
-    pub primary: bool,
+    pub _primary: bool,
     pub buttons: u16,
 }
 
@@ -29,7 +29,7 @@ impl PointerInput {
             tilt_y: e.tilt_y() as f32,
             twist: e.twist() as f32,
             t_ms: e.time_stamp(),
-            primary: e.is_primary(),
+            _primary: e.is_primary(),
             buttons: e.buttons(),
         }
     }

@@ -83,20 +83,19 @@ impl StonepenApp {
                     let pt = pi.to_ink_point(&self.vp);
                     builder.push(pt);
                     self.preview_pts = builder.preview_pts().to_vec();
-                    self.input = InputState::Drawing { ptr_id: pi.id, builder };
+                    self.input = InputState::Drawing {
+                        ptr_id: pi.id,
+                        builder,
+                    };
                 }
             }
             Tool::StrokeEraser => {
-                let world = self
-                    .vp
-                    .screen_to_world(Point2::new(pi.x, pi.y));
+                let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
                 self.session.erase_at(world, 8.0);
                 self.input = InputState::Erasing { ptr_id: pi.id };
             }
             Tool::Lasso => {
-                let world = self
-                    .vp
-                    .screen_to_world(Point2::new(pi.x, pi.y));
+                let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
                 self.lasso_preview = vec![world];
                 self.input = InputState::Lassoing {
                     ptr_id: pi.id,
@@ -119,7 +118,10 @@ impl StonepenApp {
         let inputs = coalesced_inputs(e);
         let ptr_id = e.pointer_id();
         match &mut self.input {
-            InputState::Drawing { ptr_id: id, builder } if *id == ptr_id => {
+            InputState::Drawing {
+                ptr_id: id,
+                builder,
+            } if *id == ptr_id => {
                 for pi in &inputs {
                     let pt = pi.to_ink_point(&self.vp);
                     builder.push(pt);
@@ -131,13 +133,20 @@ impl StonepenApp {
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
                 self.session.erase_at(world, 8.0);
             }
-            InputState::Lassoing { ptr_id: id, polygon } if *id == ptr_id => {
+            InputState::Lassoing {
+                ptr_id: id,
+                polygon,
+            } if *id == ptr_id => {
                 let pi = &inputs[inputs.len() - 1];
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
                 polygon.push(world);
                 self.lasso_preview = polygon.clone();
             }
-            InputState::Panning { ptr_id: id, last_sx, last_sy } if *id == ptr_id => {
+            InputState::Panning {
+                ptr_id: id,
+                last_sx,
+                last_sy,
+            } if *id == ptr_id => {
                 let pi = &inputs[inputs.len() - 1];
                 let dx = pi.x - *last_sx;
                 let dy = pi.y - *last_sy;
@@ -366,7 +375,11 @@ impl StonepenApp {
             Tool::Select => "Select",
         };
         let zoom_pct = (self.vp.zoom * 100.0).round() as i32;
-        let dirty_str = if self.session.dirty { "modified" } else { "saved" };
+        let dirty_str = if self.session.dirty {
+            "modified"
+        } else {
+            "saved"
+        };
         let status = format!(
             "strokes: {total}  selected: {sel}  tool: {tool_str}  zoom: {zoom_pct}%  {dirty_str}"
         );
