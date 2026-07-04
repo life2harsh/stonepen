@@ -91,3 +91,57 @@ pub fn layer_of_item(doc: &InkDoc, id: ItemId) -> Option<LayerId> {
         .and_then(|addr| doc.layers.get(addr.layer_idx))
         .map(|l| l.id)
 }
+
+pub fn select_rect(doc: &mut InkDoc, rect: crate::bbox::BBox) -> Vec<ItemId> {
+    let candidates = doc.query_bbox(rect);
+    let mut sel = Vec::new();
+    let min_x = rect.min_x;
+    let min_y = rect.min_y;
+    let max_x = rect.max_x;
+    let max_y = rect.max_y;
+    let marquee_corners = [
+        Point2::new(min_x, min_y),
+        Point2::new(max_x, min_y),
+        Point2::new(max_x, max_y),
+        Point2::new(min_x, max_y),
+    ];
+    for id in candidates {
+        if let Some(item) = doc.get_item(id) {
+            match item {
+                InkItem::Stroke(stroke) => {
+                    let eff_xf = doc.effective_xform(stroke.id);
+                    let world_pts: Vec<InkPoint> = stroke
+                        .pts
+                        .iter()
+                        .map(|p| {
+                            let mut wp = *p;
+                            let p2 = eff_xf.apply(Point2::new(p.x, p.y));
+                            wp.x = p2.x;
+                            wp.y = p2.y;
+                            wp
+                        })
+                        .collect();
+                    if polyline_intersects_polygon(&world_pts, &marquee_corners) {
+                        sel.push(id);
+                    }
+                }
+                InkItem::Image(img) => {
+                    let corners = [
+                        img.xform.apply(Point2::new(0.0, 0.0)),
+                        img.xform.apply(Point2::new(img.width, 0.0)),
+                        img.xform.apply(Point2::new(img.width, img.height)),
+                        img.xform.apply(Point2::new(0.0, img.height)),
+                    ];
+                    if crate::geom::polygon_intersects_polygon(&corners, &marquee_corners) {
+                        sel.push(id);
+                    }
+                }
+            }
+        }
+    }
+    doc.runtime.sel_items.clear();
+    for &id in &sel {
+        doc.runtime.sel_items.insert(id);
+    }
+    sel
+}

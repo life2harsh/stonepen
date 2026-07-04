@@ -67,6 +67,7 @@ impl Renderer {
         preview: &[InkPoint],
         preview_xform: stonepen_core::xform::Xform2D,
         lasso_poly: &[Point2],
+        marquee_rect: Option<stonepen_core::bbox::BBox>,
         canvas_w: f64,
         canvas_h: f64,
     ) {
@@ -88,6 +89,9 @@ impl Renderer {
         }
         if !lasso_poly.is_empty() {
             self.draw_lasso(lasso_poly, vp);
+        }
+        if let Some(marquee) = marquee_rect {
+            self.draw_marquee(marquee);
         }
         self.draw_selection_overlay(session, vp);
     }
@@ -399,6 +403,20 @@ impl Renderer {
         self.ctx.fill();
         self.ctx.stroke();
         let _ = self.ctx.set_line_dash(&js_sys::Array::new());
+    }
+
+    fn draw_marquee(&self, rect: stonepen_core::bbox::BBox) {
+        self.ctx.set_stroke_style_str("rgba(60, 120, 220, 0.9)");
+        self.ctx.set_fill_style_str("rgba(60, 120, 220, 0.08)");
+        self.ctx.set_line_width(1.0);
+        let x = rect.min_x as f64;
+        let y = rect.min_y as f64;
+        let w = (rect.max_x - rect.min_x) as f64;
+        let h = (rect.max_y - rect.min_y) as f64;
+        self.ctx.begin_path();
+        self.ctx.rect(x, y, w, h);
+        self.ctx.fill();
+        self.ctx.stroke();
     }
 
     fn draw_selection_overlay(&self, session: &InkSession, vp: &Viewport) {

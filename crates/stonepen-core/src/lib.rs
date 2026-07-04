@@ -34,6 +34,7 @@ pub use layer::InkLayer;
 pub use ops::{InkOp, InkTx, UndoRedo};
 pub use point::{InkPoint, Point2, PointerKind, Vec2};
 pub use runtime::InkRuntime;
+pub use sel::select_rect;
 pub use session::{InkError, InkSession, Tool};
 pub use smooth::adaptive_catmull_rom;
 pub use stroke::{InkStroke, StrokeBuilder};
@@ -1760,5 +1761,229 @@ mod tests {
         let eff2 = session.doc.effective_xform(kid2_id);
         assert_eq!(eff1, Xform2D::translate(200.0, 200.0));
         assert_eq!(eff2, Xform2D::translate(200.0, 200.0));
+    }
+
+    #[test]
+    fn test_select_rect_stroke_intersection() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let s_pts = vec![make_ink_point(10.0, 10.0), make_ink_point(30.0, 10.0)];
+        let sid = make_stroke_in_doc(&mut doc, s_pts);
+
+        // 1. Rect selects stroke with point inside
+        let rect1 = BBox::new(5.0, 5.0, 15.0, 15.0);
+        let sel1 = select_rect(&mut doc, rect1);
+        assert_eq!(sel1, vec![sid.into()]);
+
+        // 2. Rect selects stroke whose segment crosses rect (but no points inside)
+        let rect2 = BBox::new(15.0, 5.0, 25.0, 15.0);
+        let sel2 = select_rect(&mut doc, rect2);
+        assert_eq!(sel2, vec![sid.into()]);
+
+        // 3. Rect does not select separate stroke
+        let rect3 = BBox::new(40.0, 40.0, 50.0, 50.0);
+        let sel3 = select_rect(&mut doc, rect3);
+        assert!(sel3.is_empty());
+    }
+
+    #[test]
+    fn test_select_rect_transformed_stroke() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let s_pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
+        let sid = make_stroke_in_doc(&mut doc, s_pts);
+
+        // Transform the stroke (move to 100, 100)
+        if let Some(InkItem::Stroke(s)) = doc.get_item_mut(sid.into()) {
+            s.xform = Xform2D::translate(100.0, 100.0);
+            s.recompute_world_bbox();
+        }
+        doc.rebuild_runtime();
+
+        // 1. Rect at original pos does not select it anymore
+        let rect_orig = BBox::new(-5.0, -5.0, 15.0, 15.0);
+        let sel_orig = select_rect(&mut doc, rect_orig);
+        assert!(sel_orig.is_empty());
+
+        // 2. Rect at new pos selects it
+        let rect_new = BBox::new(95.0, 95.0, 115.0, 115.0);
+        let sel_new = select_rect(&mut doc, rect_new);
+        assert_eq!(sel_new, vec![sid.into()]);
+    }
+
+    #[test]
+    fn test_select_rect_attached_stroke() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+
+        let aid = AssetId::new();
+        let img = InkImage {
+            id: ItemId::new(),
+            asset_id: aid,
+            width: 100.0,
+            height: 100.0,
+            opacity: 1.0,
+            xform: Xform2D::translate(50.0, 50.0),
+            local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+            world_bbox: BBox::new(50.0, 50.0, 150.0, 150.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let img_id = img.id;
+        doc.add_item(doc.active_layer_id, InkItem::Image(img));
+
+        let stroke = InkStroke {
+            id: StrokeId::new(),
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(10.0, 10.0)],
+            pts: vec![make_ink_point(10.0, 10.0)],
+            local_bbox: BBox::new(9.0, 9.0, 11.0, 11.0),
+            world_bbox: BBox::new(9.0, 9.0, 11.0, 11.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let stroke_id = stroke.id;
+        doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
+        doc.rebuild_runtime();
+
+        // The effective position of the stroke is img.xform * stroke.xform = (50, 50) + (10, 10) = (60, 60)
+        let rect = BBox::new(55.0, 55.0, 65.0, 65.0);
+        let sel = select_rect(&mut doc, rect);
+        assert!(sel.contains(&stroke_id.into()));
+    }
+
+    #[test]
+    fn test_select_rect_image_intersection() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let aid = AssetId::new();
+        let img = InkImage {
+            id: ItemId::new(),
+            asset_id: aid,
+            width: 100.0,
+            height: 100.0,
+            opacity: 1.0,
+            xform: Xform2D::translate(100.0, 100.0),
+            local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+            world_bbox: BBox::new(100.0, 100.0, 200.0, 200.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let img_id = img.id;
+        doc.add_item(doc.active_layer_id, InkItem::Image(img));
+        doc.rebuild_runtime();
+
+        // 1. Rect intersects axis-aligned image
+        let rect1 = BBox::new(150.0, 150.0, 250.0, 250.0);
+        let sel1 = select_rect(&mut doc, rect1);
+        assert_eq!(sel1, vec![img_id]);
+
+        // 2. Rect does not intersect separate image
+        let rect2 = BBox::new(300.0, 300.0, 400.0, 400.0);
+        let sel2 = select_rect(&mut doc, rect2);
+        assert!(sel2.is_empty());
+    }
+
+    #[test]
+    fn test_select_rect_rotated_image() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let aid = AssetId::new();
+        // A 10x10 image rotated 45 degrees
+        let xf = Xform2D::rotate_about(Point2::new(5.0, 5.0), std::f32::consts::FRAC_PI_4);
+        let img = InkImage {
+            id: ItemId::new(),
+            asset_id: aid,
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: xf,
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: xf.apply_bbox(BBox::new(0.0, 0.0, 10.0, 10.0)),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let img_id = img.id;
+        doc.add_item(doc.active_layer_id, InkItem::Image(img));
+        doc.rebuild_runtime();
+
+        // Rect intersects the rotated image corner
+        let rect = BBox::new(9.0, 5.0, 15.0, 15.0);
+        let sel = select_rect(&mut doc, rect);
+        assert_eq!(sel, vec![img_id]);
+    }
+
+    #[test]
+    fn test_select_rect_broad_phase_refinement() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        // A stroke inside BBox but not intersecting the exact polygon
+        // A diagonal stroke from (0,0) to (10,10)
+        let s_pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 10.0)];
+        let _sid = make_stroke_in_doc(&mut doc, s_pts);
+
+        // A marquee rectangle at (0, 8, 2, 10).
+        // The stroke BBox is (0,0,10,10), which intersects the marquee (0, 8, 2, 10).
+        // But the stroke line segment itself does NOT cross or enter (0, 8, 2, 10) because
+        // on the line y = x, when x is between 0 and 2, y is between 0 and 2, which is far from y in [8, 10].
+        let rect = BBox::new(0.0, 8.0, 2.0, 10.0);
+        let sel = select_rect(&mut doc, rect);
+        assert!(
+            sel.is_empty(),
+            "Exact intersection must filter out broad-phase false positive"
+        );
+    }
+
+    #[test]
+    fn test_select_rect_transform_roots() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+
+        let aid = AssetId::new();
+        let img = InkImage {
+            id: ItemId::new(),
+            asset_id: aid,
+            width: 100.0,
+            height: 100.0,
+            opacity: 1.0,
+            xform: Xform2D::translate(50.0, 50.0),
+            local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+            world_bbox: BBox::new(50.0, 50.0, 150.0, 150.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let img_id = img.id;
+        doc.add_item(doc.active_layer_id, InkItem::Image(img));
+
+        let stroke = InkStroke {
+            id: StrokeId::new(),
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![make_ink_point(10.0, 10.0)],
+            pts: vec![make_ink_point(10.0, 10.0)],
+            local_bbox: BBox::new(9.0, 9.0, 11.0, 11.0),
+            world_bbox: BBox::new(9.0, 9.0, 11.0, 11.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let stroke_id = stroke.id;
+        doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
+        doc.rebuild_runtime();
+
+        // 1. Select both image and stroke -> transform roots should only contain image_id (prevents double transform)
+        let rect_both = BBox::new(40.0, 40.0, 160.0, 160.0);
+        select_rect(&mut doc, rect_both);
+        let roots = doc.transform_roots();
+        assert!(roots.contains(&img_id));
+        assert!(!roots.contains(&stroke_id.into()));
+
+        // 2. Select only the child stroke -> transform roots should contain stroke_id
+        doc.clear_sel();
+        doc.runtime.sel_items.insert(stroke_id.into());
+        let roots_child = doc.transform_roots();
+        assert!(!roots_child.contains(&img_id));
+        assert!(roots_child.contains(&stroke_id.into()));
     }
 }

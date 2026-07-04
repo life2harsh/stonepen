@@ -71,6 +71,14 @@ pub enum InputState {
         start_angle: f32,
         before: Vec<(ItemId, Xform2D)>,
     },
+    MarqueeSelecting {
+        ptr_id: i32,
+        start_screen: Point2,
+        start_world: Point2,
+        curr_screen: Point2,
+        curr_world: Point2,
+        active: bool,
+    },
 }
 
 pub struct StonepenApp {
@@ -248,9 +256,14 @@ impl StonepenApp {
                                 };
                             }
                         } else {
-                            self.session.doc.clear_sel();
-                            self.update_cursor("default");
-                            self.input = InputState::Idle;
+                            self.input = InputState::MarqueeSelecting {
+                                ptr_id: pi.id,
+                                start_screen: Point2::new(pi.x, pi.y),
+                                start_world,
+                                curr_screen: Point2::new(pi.x, pi.y),
+                                curr_world: world_pos,
+                                active: false,
+                            };
                         }
                     }
                 }
@@ -394,6 +407,26 @@ impl StonepenApp {
                 }
                 self.session.doc.rebuild_runtime();
             }
+            InputState::MarqueeSelecting {
+                ptr_id: id,
+                start_screen,
+                curr_screen,
+                curr_world,
+                active,
+                ..
+            } if *id == ptr_id => {
+                let pi = &inputs[inputs.len() - 1];
+                let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+                *curr_screen = Point2::new(pi.x, pi.y);
+                *curr_world = world_pos;
+                let dx = curr_screen.x - start_screen.x;
+                let dy = curr_screen.y - start_screen.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist >= 5.0 {
+                    *active = true;
+                    self.update_cursor("crosshair");
+                }
+            }
             _ => return,
         }
         self.redraw();
@@ -410,6 +443,7 @@ impl StonepenApp {
             InputState::MovingSel { ptr_id: id, .. } => *id == ptr_id,
             InputState::ScalingSel { ptr_id: id, .. } => *id == ptr_id,
             InputState::RotatingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::MarqueeSelecting { ptr_id: id, .. } => *id == ptr_id,
             InputState::Idle => false,
         };
         if !finishing {
@@ -481,6 +515,46 @@ impl StonepenApp {
                     self.session.do_tx(tx);
                 }
             }
+            InputState::MarqueeSelecting {
+                start_world,
+                curr_world,
+                active,
+                ..
+            } => {
+                if active {
+                    let min_x = start_world.x.min(curr_world.x);
+                    let max_x = start_world.x.max(curr_world.x);
+                    let min_y = start_world.y.min(curr_world.y);
+                    let max_y = start_world.y.max(curr_world.y);
+                    let rect = stonepen_core::bbox::BBox::new(min_x, min_y, max_x, max_y);
+                    stonepen_core::select_rect(&mut self.session.doc, rect);
+                } else {
+                    self.session.doc.clear_sel();
+                }
+                let pi = PointerInput::from_event(e, &self.canvas);
+                let (hit, _) = self.selection_hit_test(Point2::new(pi.x, pi.y));
+                match hit {
+                    SelHit::Move => self.update_cursor("move"),
+                    SelHit::Rotate => self.update_cursor("grab"),
+                    SelHit::Scale(handle) => match handle {
+                        SelHandle::TopLeft | SelHandle::BottomRight => {
+                            self.update_cursor("nwse-resize")
+                        }
+                        SelHandle::TopRight | SelHandle::BottomLeft => {
+                            self.update_cursor("nesw-resize")
+                        }
+                    },
+                    SelHit::None => {
+                        let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
+                        let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
+                        if clicked.is_some() {
+                            self.update_cursor("pointer");
+                        } else {
+                            self.update_cursor("default");
+                        }
+                    }
+                }
+            }
             InputState::Panning { .. } => {}
             InputState::Idle => {}
         }
@@ -498,6 +572,7 @@ impl StonepenApp {
             InputState::MovingSel { ptr_id: id, .. } => *id == ptr_id,
             InputState::ScalingSel { ptr_id: id, .. } => *id == ptr_id,
             InputState::RotatingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::MarqueeSelecting { ptr_id: id, .. } => *id == ptr_id,
             InputState::Idle => false,
         };
         if cancel {
@@ -524,6 +599,7 @@ impl StonepenApp {
             }
             self.preview_pts.clear();
             self.lasso_preview.clear();
+            self.update_cursor("default");
             self.redraw();
         }
     }
@@ -551,10 +627,15 @@ impl StonepenApp {
         } else if action.delete {
             self.session.delete_sel();
         } else if action.escape {
-            self.session.doc.clear_sel();
-            self.lasso_preview.clear();
-            if matches!(self.input, InputState::Lassoing { .. }) {
+            if matches!(self.input, InputState::MarqueeSelecting { .. }) {
                 self.input = InputState::Idle;
+                self.update_cursor("default");
+            } else {
+                self.session.doc.clear_sel();
+                self.lasso_preview.clear();
+                if matches!(self.input, InputState::Lassoing { .. }) {
+                    self.input = InputState::Idle;
+                }
             }
         } else if action.duplicate {
             self.session.duplicate_sel();
@@ -846,12 +927,28 @@ impl StonepenApp {
             }
             _ => Xform2D::identity(),
         };
+        let marquee = match &self.input {
+            InputState::MarqueeSelecting {
+                start_screen,
+                curr_screen,
+                active: true,
+                ..
+            } => {
+                let min_x = start_screen.x.min(curr_screen.x);
+                let max_x = start_screen.x.max(curr_screen.x);
+                let min_y = start_screen.y.min(curr_screen.y);
+                let max_y = start_screen.y.max(curr_screen.y);
+                Some(stonepen_core::bbox::BBox::new(min_x, min_y, max_x, max_y))
+            }
+            _ => None,
+        };
         self.renderer.render(
             &self.session,
             &self.vp,
             &self.preview_pts,
             preview_xf,
             &self.lasso_preview,
+            marquee,
             canvas_w,
             canvas_h,
         );
