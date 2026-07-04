@@ -4,8 +4,7 @@ use crate::bbox::BBox;
 use crate::brush::Brush;
 use crate::geom::compute_bbox;
 use crate::ids::StrokeId;
-use crate::point::InkPoint;
-use crate::resample::resample_by_distance;
+use crate::point::{InkPoint, PointerKind};
 use crate::smooth::smooth_pts;
 use crate::xform::Xform2D;
 
@@ -31,7 +30,8 @@ impl InkStroke {
 pub struct StrokeBuilder {
     pub brush: Brush,
     pub raw_pts: Vec<InkPoint>,
-    pub preview_pts: Vec<InkPoint>,
+    pub pts: Vec<InkPoint>,
+    pub last_press: f32,
 }
 
 impl StrokeBuilder {
@@ -39,11 +39,34 @@ impl StrokeBuilder {
         Self {
             brush,
             raw_pts: Vec::new(),
-            preview_pts: Vec::new(),
+            pts: Vec::new(),
+            last_press: 0.5,
         }
     }
 
-    pub fn push(&mut self, pt: InkPoint) {
+    pub fn push(&mut self, mut pt: InkPoint) {
+        let normalized = match pt.pointer_type {
+            PointerKind::Pen => {
+                if pt.press > 0.0 {
+                    pt.press
+                } else if self.raw_pts.is_empty() {
+                    0.5
+                } else {
+                    self.last_press
+                }
+            }
+            PointerKind::Mouse => 0.5,
+            PointerKind::Touch | PointerKind::Unknown => {
+                if pt.press > 0.0 {
+                    pt.press
+                } else {
+                    0.5
+                }
+            }
+        };
+        pt.press = normalized;
+        self.last_press = normalized;
+
         if let Some(last) = self.raw_pts.last() {
             let dx = pt.x - last.x;
             let dy = pt.y - last.y;
@@ -52,28 +75,29 @@ impl StrokeBuilder {
             }
         }
         self.raw_pts.push(pt);
-        self.preview_pts = smooth_pts(&self.raw_pts, self.brush.smooth);
+
+        let deduped = crate::resample::dedup_pts(&self.raw_pts, 0.5);
+        let resampled = crate::resample::resample_by_distance(&deduped, 2.0);
+        self.pts = smooth_pts(&resampled, self.brush.smooth);
     }
 
     pub fn preview_pts(&self) -> &[InkPoint] {
-        &self.preview_pts
+        &self.pts
     }
 
     pub fn finish(self, now_ms: i64) -> Option<InkStroke> {
-        if self.raw_pts.is_empty() {
+        if self.pts.is_empty() {
             return None;
         }
-        let resampled = resample_by_distance(&self.raw_pts, 2.0);
-        let pts = smooth_pts(&resampled, self.brush.smooth);
         let half_w = self.brush.base_w * 0.5;
-        let local_bbox = compute_bbox(&pts, half_w)?;
+        let local_bbox = compute_bbox(&self.pts, half_w)?;
         let xform = Xform2D::identity();
         let world_bbox = xform.apply_bbox(local_bbox);
         Some(InkStroke {
             id: StrokeId::new(),
             brush: self.brush,
             raw_pts: self.raw_pts,
-            pts,
+            pts: self.pts,
             local_bbox,
             world_bbox,
             xform,

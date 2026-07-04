@@ -73,7 +73,7 @@ impl StonepenApp {
 
     pub fn on_pointer_down(&mut self, e: &PointerEvent) {
         e.prevent_default();
-        let pi = PointerInput::from_event(e);
+        let pi = PointerInput::from_event(e, &self.canvas);
         match &self.session.active_tool {
             Tool::Pen | Tool::Pencil | Tool::Highlighter => {
                 let draws = match pi.kind {
@@ -122,7 +122,7 @@ impl StonepenApp {
 
     pub fn on_pointer_move(&mut self, e: &PointerEvent) {
         e.prevent_default();
-        let inputs = get_inputs(e);
+        let inputs = get_inputs(e, &self.canvas);
         let ptr_id = e.pointer_id();
         let is_erasing =
             matches!(&self.input, InputState::Erasing { ptr_id: id, .. } if *id == ptr_id);
@@ -188,7 +188,21 @@ impl StonepenApp {
         }
         let old_state = std::mem::replace(&mut self.input, InputState::Idle);
         match old_state {
-            InputState::Drawing { builder, .. } => {
+            InputState::Drawing { mut builder, .. } => {
+                let pi = PointerInput::from_event(e, &self.canvas);
+                let pt = pi.to_ink_point(&self.vp);
+                let mut should_add = true;
+                if let Some(last) = builder.raw_pts.last() {
+                    let dx = pt.x - last.x;
+                    let dy = pt.y - last.y;
+                    const MIN_PT_DIST: f32 = 0.25;
+                    if dx * dx + dy * dy < MIN_PT_DIST * MIN_PT_DIST {
+                        should_add = false;
+                    }
+                }
+                if should_add {
+                    builder.push(pt);
+                }
                 let now_ms = js_sys::Date::now() as i64;
                 if let Some(stroke) = builder.finish(now_ms) {
                     self.session.add_stroke(stroke);
@@ -377,8 +391,8 @@ impl StonepenApp {
     }
 
     pub fn redraw(&self) {
-        let canvas_w = self.canvas.width() as f64;
-        let canvas_h = self.canvas.height() as f64;
+        let canvas_w = self.canvas.client_width() as f64;
+        let canvas_h = self.canvas.client_height() as f64;
         self.renderer.render(
             &self.session,
             &self.vp,

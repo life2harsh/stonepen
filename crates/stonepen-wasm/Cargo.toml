@@ -21,6 +21,7 @@ features = [
   "console",
   "CssStyleDeclaration",
   "Document",
+  "DomRect",
   "Element",
   "EventTarget",
   "File",

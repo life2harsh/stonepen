@@ -1,10 +1,12 @@
 use stonepen_core::point::{InkPoint, PointerKind};
 use stonepen_core::viewport::Viewport;
-use web_sys::PointerEvent;
+use web_sys::{HtmlCanvasElement, PointerEvent};
 
 pub struct PointerInput {
     pub id: i32,
     pub kind: PointerKind,
+    pub cx: f32,
+    pub cy: f32,
     pub x: f32,
     pub y: f32,
     pub press: f32,
@@ -17,12 +19,15 @@ pub struct PointerInput {
 }
 
 impl PointerInput {
-    pub fn from_event(e: &PointerEvent) -> Self {
+    pub fn from_event(e: &PointerEvent, canvas: &HtmlCanvasElement) -> Self {
+        let rect = canvas.get_bounding_client_rect();
         Self {
             id: e.pointer_id(),
             kind: parse_pointer_kind(&e.pointer_type()),
-            x: e.client_x() as f32,
-            y: e.client_y() as f32,
+            cx: e.client_x() as f32,
+            cy: e.client_y() as f32,
+            x: (e.client_x() as f64 - rect.left()) as f32,
+            y: (e.client_y() as f64 - rect.top()) as f32,
             press: e.pressure(),
             tilt_x: e.tilt_x() as f32,
             tilt_y: e.tilt_y() as f32,
@@ -35,6 +40,10 @@ impl PointerInput {
 
     pub fn to_ink_point(&self, vp: &Viewport) -> InkPoint {
         let world = vp.screen_to_world(stonepen_core::point::Point2::new(self.x, self.y));
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "client: ({:.2}, {:.2}) | screen: ({:.2}, {:.2}) | world: ({:.2}, {:.2}) | pan: ({:.2}, {:.2}) | zoom: {:.2} | dpr: {:.2}",
+            self.cx, self.cy, self.x, self.y, world.x, world.y, vp.pan_x, vp.pan_y, vp.zoom, vp.dpr
+        )));
         InkPoint {
             x: world.x,
             y: world.y,
@@ -57,6 +66,6 @@ pub fn parse_pointer_kind(s: &str) -> PointerKind {
     }
 }
 
-pub fn get_inputs(e: &PointerEvent) -> Vec<PointerInput> {
-    vec![PointerInput::from_event(e)]
+pub fn get_inputs(e: &PointerEvent, canvas: &HtmlCanvasElement) -> Vec<PointerInput> {
+    vec![PointerInput::from_event(e, canvas)]
 }

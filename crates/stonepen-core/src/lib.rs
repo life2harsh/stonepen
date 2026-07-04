@@ -494,6 +494,43 @@ mod tests {
     }
 
     #[test]
+    fn test_stroke_builder_invariants() {
+        let brush = Brush::default_pen();
+        let mut builder = StrokeBuilder::new(brush);
+
+        let p1 = make_ink_point(10.0, 10.0);
+        let mut p2 = make_ink_point(10.05, 10.0);
+        p2.pointer_type = PointerKind::Pen;
+        p2.press = 0.0; // 0 pressure pen release
+
+        builder.push(p1);
+        builder.push(p2); // Duplicate of first point, should be ignored
+        assert_eq!(builder.raw_pts.len(), 1);
+
+        let mut p3 = make_ink_point(20.0, 10.0);
+        p3.pointer_type = PointerKind::Pen;
+        p3.press = 0.8;
+        builder.push(p3);
+        assert_eq!(builder.raw_pts.len(), 2);
+
+        let mut p4 = make_ink_point(30.0, 10.0);
+        p4.pointer_type = PointerKind::Pen;
+        p4.press = 0.0; // 0 pressure pen release
+        builder.push(p4);
+        assert_eq!(builder.raw_pts.len(), 3);
+        assert_eq!(builder.raw_pts[2].press, 0.8); // Should normalize to last valid pressure
+
+        let preview_pts = builder.preview_pts().to_vec();
+        let s = builder.finish(0).unwrap();
+        assert_eq!(s.pts.len(), preview_pts.len());
+        for (a, b) in s.pts.iter().zip(preview_pts.iter()) {
+            assert!((a.x - b.x).abs() < 1e-4);
+            assert!((a.y - b.y).abs() < 1e-4);
+            assert!((a.press - b.press).abs() < 1e-4);
+        }
+    }
+
+    #[test]
     fn test_stroke_builder_empty_returns_none() {
         let brush = Brush::default_pen();
         let builder = StrokeBuilder::new(brush);

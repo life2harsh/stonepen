@@ -30,3 +30,31 @@ pub fn resample_by_distance(pts: &[InkPoint], min_dist: f32) -> Vec<InkPoint> {
     }
     out
 }
+
+pub fn dedup_pts(pts: &[InkPoint], min_dist: f32) -> Vec<InkPoint> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let mut out = Vec::with_capacity(pts.len());
+    out.push(pts[0]);
+    let min_dist_sq = min_dist * min_dist;
+    for &pt in pts.iter().skip(1) {
+        if let Some(last) = out.last() {
+            let dx = pt.x - last.x;
+            let dy = pt.y - last.y;
+            if dx * dx + dy * dy >= min_dist_sq {
+                out.push(pt);
+            }
+        }
+    }
+    if let Some(&last_raw) = pts.last() {
+        if let Some(&last_added) = out.last() {
+            let dx = last_raw.x - last_added.x;
+            let dy = last_raw.y - last_added.y;
+            if dx * dx + dy * dy >= 0.001 {
+                out.push(last_raw);
+            }
+        }
+    }
+    out
+}

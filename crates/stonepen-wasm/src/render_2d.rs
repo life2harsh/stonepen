@@ -24,6 +24,8 @@ impl Renderer {
         canvas_w: f64,
         canvas_h: f64,
     ) {
+        let dpr = vp.dpr as f64;
+        let _ = self.ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
         self.clear(canvas_w, canvas_h);
         self.draw_paper(vp, canvas_w, canvas_h, &session.doc);
         self.draw_strokes(session, vp);
@@ -147,26 +149,24 @@ impl Renderer {
         format!("rgba({},{},{},{:.3})", color.r, color.g, color.b, opacity)
     }
 
-    fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport, selected: bool) {
-        let pts = &stroke.pts;
+    fn draw_pts(
+        &self,
+        pts: &[InkPoint],
+        brush: &stonepen_core::brush::Brush,
+        xform: stonepen_core::xform::Xform2D,
+        vp: &Viewport,
+    ) {
         if pts.is_empty() {
             return;
         }
-        let brush = &stroke.brush;
         let style = Self::stroke_style_str(brush);
         self.ctx.set_stroke_style_str(&style);
         self.ctx.set_line_cap("round");
         self.ctx.set_line_join("round");
-        let xf = stroke.xform;
-        let dpr = vp.dpr as f64;
         if pts.len() == 1 {
-            let world = Point2::new(
-                xf.a * pts[0].x + xf.c * pts[0].y + xf.tx,
-                xf.b * pts[0].x + xf.d * pts[0].y + xf.ty,
-            );
+            let world = xform.apply(pts[0].pos());
             let sp = vp.world_to_screen(world);
-            let width =
-                (brush.base_w * pts[0].press.max(brush.min_press) * vp.zoom * vp.dpr) as f64;
+            let width = (brush.base_w * pts[0].press.max(brush.min_press) * vp.zoom) as f64;
             self.ctx.set_line_width(width.max(0.5));
             self.ctx.begin_path();
             let _ = self.ctx.arc(
@@ -179,19 +179,17 @@ impl Renderer {
             self.ctx.fill();
             return;
         }
-        let mut prev_world = Point2::new(
-            xf.a * pts[0].x + xf.c * pts[0].y + xf.tx,
-            xf.b * pts[0].x + xf.d * pts[0].y + xf.ty,
-        );
+        let mut prev_world = xform.apply(pts[0].pos());
         let mut prev_sp = vp.world_to_screen(prev_world);
         for pt in pts.iter().skip(1) {
-            let world = Point2::new(
-                xf.a * pt.x + xf.c * pt.y + xf.tx,
-                xf.b * pt.x + xf.d * pt.y + xf.ty,
-            );
+            let world = xform.apply(pt.pos());
+            let dx = world.x - prev_world.x;
+            let dy = world.y - prev_world.y;
+            if dx * dx + dy * dy < 0.01 {
+                continue;
+            }
             let sp = vp.world_to_screen(world);
-            let width =
-                (brush.base_w * pt.press.max(brush.min_press) * vp.zoom * dpr as f32) as f64;
+            let width = (brush.base_w * pt.press.max(brush.min_press) * vp.zoom) as f64;
             self.ctx.set_line_width(width.max(0.5));
             self.ctx.begin_path();
             self.ctx.move_to(prev_sp.x as f64, prev_sp.y as f64);
@@ -200,7 +198,10 @@ impl Renderer {
             prev_world = world;
             prev_sp = sp;
         }
-        let _ = prev_world;
+    }
+
+    fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport, selected: bool) {
+        self.draw_pts(&stroke.pts, &stroke.brush, stroke.xform, vp);
         if selected {
             self.draw_selection_outline(stroke, vp);
         }
@@ -226,42 +227,7 @@ impl Renderer {
     }
 
     fn draw_preview(&self, pts: &[InkPoint], brush: &stonepen_core::brush::Brush, vp: &Viewport) {
-        if pts.is_empty() {
-            return;
-        }
-        let style = Self::stroke_style_str(brush);
-        self.ctx.set_stroke_style_str(&style);
-        self.ctx.set_line_cap("round");
-        self.ctx.set_line_join("round");
-        let dpr = vp.dpr as f64;
-        if pts.len() == 1 {
-            let sp = vp.world_to_screen(pts[0].pos());
-            let width =
-                (brush.base_w * pts[0].press.max(brush.min_press) * vp.zoom * vp.dpr) as f64;
-            self.ctx.set_line_width(width.max(0.5));
-            self.ctx.begin_path();
-            let _ = self.ctx.arc(
-                sp.x as f64,
-                sp.y as f64,
-                width * 0.5,
-                0.0,
-                std::f64::consts::TAU,
-            );
-            self.ctx.fill();
-            return;
-        }
-        let mut prev_sp = vp.world_to_screen(pts[0].pos());
-        for pt in pts.iter().skip(1) {
-            let sp = vp.world_to_screen(pt.pos());
-            let width =
-                (brush.base_w * pt.press.max(brush.min_press) * vp.zoom * dpr as f32) as f64;
-            self.ctx.set_line_width(width.max(0.5));
-            self.ctx.begin_path();
-            self.ctx.move_to(prev_sp.x as f64, prev_sp.y as f64);
-            self.ctx.line_to(sp.x as f64, sp.y as f64);
-            self.ctx.stroke();
-            prev_sp = sp;
-        }
+        self.draw_pts(pts, brush, stonepen_core::xform::Xform2D::identity(), vp);
     }
 
     fn draw_lasso(&self, poly: &[Point2], vp: &Viewport) {

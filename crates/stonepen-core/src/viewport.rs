@@ -25,15 +25,15 @@ impl Viewport {
 
     pub fn screen_to_world(&self, sp: Point2) -> Point2 {
         Point2 {
-            x: (sp.x / self.dpr - self.pan_x) / self.zoom,
-            y: (sp.y / self.dpr - self.pan_y) / self.zoom,
+            x: (sp.x - self.pan_x) / self.zoom,
+            y: (sp.y - self.pan_y) / self.zoom,
         }
     }
 
     pub fn world_to_screen(&self, wp: Point2) -> Point2 {
         Point2 {
-            x: (wp.x * self.zoom + self.pan_x) * self.dpr,
-            y: (wp.y * self.zoom + self.pan_y) * self.dpr,
+            x: wp.x * self.zoom + self.pan_x,
+            y: wp.y * self.zoom + self.pan_y,
         }
     }
 
@@ -49,8 +49,8 @@ impl Viewport {
     }
 
     pub fn pan_by_screen_delta(&mut self, dx: f32, dy: f32) {
-        self.pan_x += dx / self.dpr;
-        self.pan_y += dy / self.dpr;
+        self.pan_x += dx;
+        self.pan_y += dy;
     }
 
     pub fn zoom_at_screen_pos(&mut self, sp: Point2, factor: f32) {

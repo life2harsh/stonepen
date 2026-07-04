@@ -6,7 +6,11 @@ async function main() {
   const app = new WasmApp("ink-canvas");
   const canvas = document.getElementById("ink-canvas");
 
-  canvas.addEventListener("pointerdown", (e) => { e.preventDefault(); app.on_pointer_down(e); });
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    canvas.focus();
+    app.on_pointer_down(e);
+  });
   canvas.addEventListener("pointermove", (e) => { e.preventDefault(); app.on_pointer_move(e); });
   canvas.addEventListener("pointerup", (e) => { e.preventDefault(); app.on_pointer_up(e); });
   canvas.addEventListener("pointercancel", (e) => { app.on_pointer_cancel(e); });

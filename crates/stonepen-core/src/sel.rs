@@ -6,6 +6,7 @@ use crate::point::Point2;
 
 pub fn lasso_select(doc: &mut InkDoc, polygon: &[Point2]) -> Vec<StrokeId> {
     if polygon.len() < 3 {
+        doc.runtime.sel_strokes.clear();
         return Vec::new();
     }
     let min_x = polygon.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
