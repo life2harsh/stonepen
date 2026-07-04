@@ -31,6 +31,8 @@ pub enum InputState {
     Drawing {
         ptr_id: i32,
         builder: StrokeBuilder,
+        parent_id: Option<ItemId>,
+        parent_xform_inv: Option<Xform2D>,
     },
     Erasing {
         ptr_id: i32,
@@ -111,14 +113,31 @@ impl StonepenApp {
                     _ => false,
                 };
                 if draws {
+                    let mut parent_id = None;
+                    let mut parent_xform_inv = None;
+                    if self.session.doc.runtime.sel_items.len() == 1 {
+                        let sel_id = *self.session.doc.runtime.sel_items.iter().next().unwrap();
+                        if let Some(InkItem::Image(img)) = self.session.doc.get_item(sel_id) {
+                            parent_id = Some(img.id);
+                            parent_xform_inv = img.xform.inverse();
+                        }
+                    }
+
                     let brush = self.session.active_brush.clone();
                     let mut builder = StrokeBuilder::new(brush);
-                    let pt = pi.to_ink_point(&self.vp);
+                    let mut pt = pi.to_ink_point(&self.vp);
+                    if let Some(inv) = parent_xform_inv {
+                        let lp = inv.apply(Point2::new(pt.x, pt.y));
+                        pt.x = lp.x;
+                        pt.y = lp.y;
+                    }
                     builder.push(pt);
                     self.preview_pts = builder.preview_pts().to_vec();
                     self.input = InputState::Drawing {
                         ptr_id: pi.id,
                         builder,
+                        parent_id,
+                        parent_xform_inv,
                     };
                 }
             }
@@ -190,7 +209,21 @@ impl StonepenApp {
                 }
 
                 if let Some(handle) = hit_handle_enum {
-                    let before = sel
+                    let mut roots = Vec::new();
+                    for &id in &sel {
+                        let mut is_root = true;
+                        if let Some(InkItem::Stroke(s)) = self.session.doc.get_item(id) {
+                            if let Some(pid) = s.parent_id {
+                                if sel.contains(&pid) {
+                                    is_root = false;
+                                }
+                            }
+                        }
+                        if is_root {
+                            roots.push(id);
+                        }
+                    }
+                    let before = roots
                         .iter()
                         .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
                         .collect();
@@ -215,7 +248,21 @@ impl StonepenApp {
                     let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
                     if let Some(id) = clicked {
                         if self.session.doc.runtime.sel_items.contains(&id) {
-                            let before = sel
+                            let mut roots = Vec::new();
+                            for &id in &sel {
+                                let mut is_root = true;
+                                if let Some(InkItem::Stroke(s)) = self.session.doc.get_item(id) {
+                                    if let Some(pid) = s.parent_id {
+                                        if sel.contains(&pid) {
+                                            is_root = false;
+                                        }
+                                    }
+                                }
+                                if is_root {
+                                    roots.push(id);
+                                }
+                            }
+                            let before = roots
                                 .iter()
                                 .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
                                 .collect();
@@ -264,9 +311,16 @@ impl StonepenApp {
             InputState::Drawing {
                 ptr_id: id,
                 builder,
+                parent_id: _,
+                parent_xform_inv,
             } if *id == ptr_id => {
                 for pi in &inputs {
-                    let pt = pi.to_ink_point(&self.vp);
+                    let mut pt = pi.to_ink_point(&self.vp);
+                    if let Some(inv) = parent_xform_inv {
+                        let lp = inv.apply(Point2::new(pt.x, pt.y));
+                        pt.x = lp.x;
+                        pt.y = lp.y;
+                    }
                     builder.push(pt);
                 }
                 self.preview_pts = builder.preview_pts().to_vec();
@@ -371,9 +425,19 @@ impl StonepenApp {
         }
         let old_state = std::mem::replace(&mut self.input, InputState::Idle);
         match old_state {
-            InputState::Drawing { mut builder, .. } => {
+            InputState::Drawing {
+                mut builder,
+                parent_id,
+                parent_xform_inv,
+                ..
+            } => {
                 let pi = PointerInput::from_event(e, &self.canvas);
-                let pt = pi.to_ink_point(&self.vp);
+                let mut pt = pi.to_ink_point(&self.vp);
+                if let Some(inv) = parent_xform_inv {
+                    let lp = inv.apply(Point2::new(pt.x, pt.y));
+                    pt.x = lp.x;
+                    pt.y = lp.y;
+                }
                 let mut should_add = true;
                 if let Some(last) = builder.raw_pts.last() {
                     let dx = pt.x - last.x;
@@ -387,7 +451,7 @@ impl StonepenApp {
                     builder.push(pt);
                 }
                 let now_ms = js_sys::Date::now() as i64;
-                if let Some(stroke) = builder.finish(now_ms) {
+                if let Some(stroke) = builder.finish(now_ms, parent_id) {
                     self.session.add_stroke(stroke);
                 }
                 self.preview_pts.clear();
@@ -609,10 +673,24 @@ impl StonepenApp {
     pub fn redraw(&self) {
         let canvas_w = self.canvas.client_width() as f64;
         let canvas_h = self.canvas.client_height() as f64;
+        let preview_xf = match &self.input {
+            InputState::Drawing {
+                parent_id: Some(pid),
+                ..
+            } => {
+                if let Some(parent_item) = self.session.doc.get_item(*pid) {
+                    parent_item.xform()
+                } else {
+                    Xform2D::identity()
+                }
+            }
+            _ => Xform2D::identity(),
+        };
         self.renderer.render(
             &self.session,
             &self.vp,
             &self.preview_pts,
+            preview_xf,
             &self.lasso_preview,
             canvas_w,
             canvas_h,

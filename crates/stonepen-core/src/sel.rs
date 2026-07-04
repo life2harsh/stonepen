@@ -1,6 +1,6 @@
 use crate::doc::InkDoc;
 use crate::geom::polyline_intersects_polygon;
-use crate::hit::stroke_hit;
+
 use crate::ids::{ItemId, LayerId};
 use crate::item::InkItem;
 use crate::point::{InkPoint, Point2};
@@ -27,12 +27,13 @@ pub fn lasso_select(doc: &mut InkDoc, polygon: &[Point2]) -> Vec<ItemId> {
         if let Some(item) = doc.get_item(id) {
             match item {
                 InkItem::Stroke(stroke) => {
+                    let eff_xf = doc.effective_xform(stroke.id);
                     let world_pts: Vec<InkPoint> = stroke
                         .pts
                         .iter()
                         .map(|p| {
                             let mut wp = *p;
-                            let p2 = stroke.xform.apply(Point2::new(p.x, p.y));
+                            let p2 = eff_xf.apply(Point2::new(p.x, p.y));
                             wp.x = p2.x;
                             wp.y = p2.y;
                             wp
@@ -75,7 +76,7 @@ pub fn eraser_candidates(doc: &InkDoc, pos: Point2, radius: f32) -> Vec<ItemId> 
         .into_iter()
         .filter(|&id| {
             if let Some(InkItem::Stroke(s)) = doc.get_item(id) {
-                stroke_hit(s, pos, radius)
+                doc.stroke_hit(s, pos, radius)
             } else {
                 false
             }

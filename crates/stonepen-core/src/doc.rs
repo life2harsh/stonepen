@@ -7,6 +7,7 @@ use crate::layer::InkLayer;
 use crate::point::Point2;
 use crate::runtime::{IndexedItem, InkRuntime, ItemAddress};
 use crate::stroke::InkStroke;
+use crate::xform::Xform2D;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InkBackground {
@@ -78,10 +79,37 @@ impl InkDoc {
     pub fn rebuild_runtime(&mut self) {
         self.runtime.layer_pos.clear();
         self.runtime.item_pos.clear();
+
+        let mut image_xforms = std::collections::HashMap::new();
+        for layer in &self.layers {
+            for item in &layer.items {
+                if let InkItem::Image(img) = item {
+                    image_xforms.insert(img.id, img.xform);
+                }
+            }
+        }
+
         let mut entries = Vec::new();
-        for (li, layer) in self.layers.iter().enumerate() {
+        for (li, layer) in self.layers.iter_mut().enumerate() {
             self.runtime.layer_pos.insert(layer.id, li);
-            for (ii, item) in layer.items.iter().enumerate() {
+            for (ii, item) in layer.items.iter_mut().enumerate() {
+                match item {
+                    InkItem::Stroke(s) => {
+                        let eff_xf = if let Some(pid) = s.parent_id {
+                            if let Some(&pxf) = image_xforms.get(&pid) {
+                                pxf.concat(s.xform)
+                            } else {
+                                s.xform
+                            }
+                        } else {
+                            s.xform
+                        };
+                        s.world_bbox = eff_xf.apply_bbox(s.local_bbox);
+                    }
+                    InkItem::Image(img) => {
+                        img.world_bbox = img.xform.apply_bbox(img.local_bbox);
+                    }
+                }
                 self.runtime.item_pos.insert(
                     item.id(),
                     ItemAddress {
@@ -131,6 +159,41 @@ impl InkDoc {
         self.rebuild_runtime();
     }
 
+    pub fn effective_xform(&self, id: ItemId) -> Xform2D {
+        if let Some(item) = self.get_item(id) {
+            match item {
+                InkItem::Stroke(s) => {
+                    if let Some(parent_id) = s.parent_id {
+                        if let Some(parent_item) = self.get_item(parent_id) {
+                            parent_item.xform().concat(s.xform)
+                        } else {
+                            s.xform
+                        }
+                    } else {
+                        s.xform
+                    }
+                }
+                InkItem::Image(img) => img.xform,
+            }
+        } else {
+            Xform2D::identity()
+        }
+    }
+
+    pub fn attached_strokes(&self, image_id: ItemId) -> Vec<ItemId> {
+        let mut kids = Vec::new();
+        for layer in &self.layers {
+            for item in &layer.items {
+                if let InkItem::Stroke(s) = item {
+                    if s.parent_id == Some(image_id) {
+                        kids.push(s.id);
+                    }
+                }
+            }
+        }
+        kids
+    }
+
     pub fn add_stroke(&mut self, layer_id: LayerId, stroke: InkStroke) {
         self.add_item(layer_id, InkItem::Stroke(stroke));
     }
@@ -163,7 +226,21 @@ impl InkDoc {
     }
 
     pub fn delete_items(&mut self, ids: &[ItemId]) -> Vec<(LayerId, usize, InkItem)> {
-        let id_set: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+        let mut id_set: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+        let mut to_add = Vec::new();
+        for &id in &id_set {
+            if let Some(item) = self.get_item(id) {
+                if let InkItem::Image(img) = item {
+                    for kid in self.attached_strokes(img.id) {
+                        to_add.push(kid);
+                    }
+                }
+            }
+        }
+        for kid in to_add {
+            id_set.insert(kid);
+        }
+
         let mut removed = Vec::new();
         for layer in &mut self.layers {
             let layer_id = layer.id;
@@ -247,21 +324,36 @@ impl InkDoc {
 
     pub fn selection_bbox(&self) -> Option<BBox> {
         let mut bbox: Option<BBox> = None;
+        let include_item = |b: BBox, cur_bbox: &mut Option<BBox>| {
+            if let Some(mut cur) = *cur_bbox {
+                cur.min_x = cur.min_x.min(b.min_x);
+                cur.min_y = cur.min_y.min(b.min_y);
+                cur.max_x = cur.max_x.max(b.max_x);
+                cur.max_y = cur.max_y.max(b.max_y);
+                *cur_bbox = Some(cur);
+            } else {
+                *cur_bbox = Some(b);
+            }
+        };
+
         for &id in &self.runtime.sel_items {
             if let Some(item) = self.get_item(id) {
-                let b = item.world_bbox();
-                if let Some(mut cur) = bbox {
-                    cur.min_x = cur.min_x.min(b.min_x);
-                    cur.min_y = cur.min_y.min(b.min_y);
-                    cur.max_x = cur.max_x.max(b.max_x);
-                    cur.max_y = cur.max_y.max(b.max_y);
-                    bbox = Some(cur);
-                } else {
-                    bbox = Some(b);
+                include_item(item.world_bbox(), &mut bbox);
+                if let InkItem::Image(img) = item {
+                    for kid_id in self.attached_strokes(img.id) {
+                        if let Some(kid) = self.get_item(kid_id) {
+                            include_item(kid.world_bbox(), &mut bbox);
+                        }
+                    }
                 }
             }
         }
         bbox
+    }
+
+    pub fn stroke_hit(&self, stroke: &InkStroke, pos: Point2, radius: f32) -> bool {
+        let eff_xf = self.effective_xform(stroke.id);
+        crate::hit::stroke_hit_with_xform(stroke, eff_xf, pos, radius)
     }
 
     pub fn hit_test_item(&self, pos: Point2, screen_tol: f32, zoom: f32) -> Option<ItemId> {
@@ -278,7 +370,7 @@ impl InkDoc {
         for id in candidates {
             if let Some(item) = self.get_item(id) {
                 let hit = match item {
-                    InkItem::Stroke(s) => crate::hit::stroke_hit(s, pos, world_tol),
+                    InkItem::Stroke(s) => self.stroke_hit(s, pos, world_tol),
                     InkItem::Image(img) => {
                         if let Some(inv) = img.xform.inverse() {
                             let lp = inv.apply(pos);

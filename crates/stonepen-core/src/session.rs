@@ -7,7 +7,7 @@ use crate::export_svg;
 use crate::ids::{ItemId, LayerId};
 use crate::item::InkItem;
 use crate::ops::{InkOp, InkTx, UndoRedo};
-use crate::point::{Point2, Vec2};
+use crate::point::Point2;
 use crate::stroke::InkStroke;
 use crate::xform::Xform2D;
 
@@ -101,7 +101,7 @@ impl InkSession {
         let mut items_to_delete = Vec::new();
         for id in candidates {
             if let Some(InkItem::Stroke(s)) = self.doc.get_item(id) {
-                if crate::hit::stroke_hit(s, pos, radius) {
+                if self.doc.stroke_hit(s, pos, radius) {
                     items_to_delete.push(id);
                 }
             }
@@ -168,51 +168,79 @@ impl InkSession {
         if sel.is_empty() {
             return;
         }
-        let mut dup_items = Vec::new();
-        let offset = Vec2::new(15.0, 15.0);
-        for id in sel {
-            if let Some(item) = self.doc.get_item(id) {
-                let mut cloned = item.clone();
-                match &mut cloned {
-                    InkItem::Stroke(s) => {
-                        s.id = ItemId::new();
-                        s.xform = Xform2D::translate(offset.x, offset.y).concat(s.xform);
-                        s.recompute_world_bbox();
-                    }
-                    InkItem::Image(img) => {
-                        img.id = ItemId::new();
-                        img.xform = Xform2D::translate(offset.x, offset.y).concat(img.xform);
-                        img.recompute_world_bbox();
-                    }
-                }
-                if let Some(addr) = self.doc.runtime.item_pos.get(&id) {
-                    dup_items.push((addr.layer_idx, addr.item_idx + 1, cloned));
-                }
+
+        let mut image_id_map = std::collections::HashMap::new();
+        for &id in &sel {
+            if let Some(InkItem::Image(_)) = self.doc.get_item(id) {
+                image_id_map.insert(id, ItemId::new());
             }
         }
-        if dup_items.is_empty() {
+
+        let mut dup_ops = Vec::new();
+        let offset = Xform2D::translate(15.0, 15.0);
+
+        for layer in &self.doc.layers {
+            let mut layer_dups = Vec::new();
+            for (item_idx, item) in layer.items.iter().enumerate() {
+                let id = item.id();
+                if let InkItem::Image(img) = item {
+                    if sel.contains(&id) {
+                        let new_id = *image_id_map.get(&id).unwrap();
+                        let mut cloned_img = img.clone();
+                        cloned_img.id = new_id;
+                        cloned_img.xform = offset.concat(cloned_img.xform);
+                        cloned_img.recompute_world_bbox();
+                        layer_dups.push((item_idx, InkItem::Image(cloned_img)));
+                    }
+                }
+                if let InkItem::Stroke(s) = item {
+                    if let Some(parent_id) = s.parent_id {
+                        if let Some(&new_parent_id) = image_id_map.get(&parent_id) {
+                            let mut cloned_stroke = s.clone();
+                            cloned_stroke.id = ItemId::new();
+                            cloned_stroke.parent_id = Some(new_parent_id);
+                            cloned_stroke.recompute_world_bbox();
+                            layer_dups.push((item_idx, InkItem::Stroke(cloned_stroke)));
+                            continue;
+                        }
+                    }
+                    if sel.contains(&id) {
+                        let mut cloned_stroke = s.clone();
+                        cloned_stroke.id = ItemId::new();
+                        cloned_stroke.xform = offset.concat(cloned_stroke.xform);
+                        cloned_stroke.recompute_world_bbox();
+                        layer_dups.push((item_idx, InkItem::Stroke(cloned_stroke)));
+                    }
+                }
+            }
+
+            if !layer_dups.is_empty() {
+                let mut adjusted_dups = Vec::new();
+                let mut shift = 0;
+                for (orig_idx, dup_item) in layer_dups {
+                    adjusted_dups.push((orig_idx + 1 + shift, dup_item));
+                    shift += 1;
+                }
+                dup_ops.push((layer.id, adjusted_dups));
+            }
+        }
+
+        if dup_ops.is_empty() {
             return;
         }
+
         let mut tx = InkTx::new("duplicate");
-        let mut items_by_layer: std::collections::HashMap<LayerId, Vec<(usize, InkItem)>> =
-            std::collections::HashMap::new();
-        let mut new_ids = Vec::new();
-        for (layer_idx, insert_idx, item) in dup_items {
-            let layer_id = self.doc.layers[layer_idx].id;
-            new_ids.push(item.id());
-            items_by_layer
-                .entry(layer_id)
-                .or_default()
-                .push((insert_idx, item));
-        }
-        for (layer_id, items) in items_by_layer {
+        let mut new_sel = std::collections::HashSet::new();
+        for (layer_id, items) in dup_ops {
+            for (_, item) in &items {
+                new_sel.insert(item.id());
+            }
             tx = tx.push(InkOp::AddItems { layer_id, items });
         }
+
         self.do_tx(tx);
         self.doc.clear_sel();
-        for id in new_ids {
-            self.doc.runtime.sel_items.insert(id);
-        }
+        self.doc.runtime.sel_items = new_sel;
     }
 
     pub fn export_json(&self) -> Result<String, InkError> {

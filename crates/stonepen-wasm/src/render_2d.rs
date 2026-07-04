@@ -65,6 +65,7 @@ impl Renderer {
         session: &InkSession,
         vp: &Viewport,
         preview: &[InkPoint],
+        preview_xform: stonepen_core::xform::Xform2D,
         lasso_poly: &[Point2],
         canvas_w: f64,
         canvas_h: f64,
@@ -83,7 +84,7 @@ impl Renderer {
         self.draw_paper(vp, canvas_w, canvas_h, &session.doc);
         self.draw_items(session, vp);
         if !preview.is_empty() {
-            self.draw_preview(preview, &session.active_brush, vp);
+            self.draw_preview(preview, preview_xform, &session.active_brush, vp);
         }
         if !lasso_poly.is_empty() {
             self.draw_lasso(lasso_poly, vp);
@@ -189,7 +190,8 @@ impl Renderer {
                 }
                 match item {
                     InkItem::Stroke(stroke) => {
-                        self.draw_stroke(stroke, vp);
+                        let eff_xf = session.doc.effective_xform(stroke.id);
+                        self.draw_stroke(stroke, eff_xf, vp);
                     }
                     InkItem::Image(img) => {
                         if let Some(asset) = session.doc.get_asset(img.asset_id) {
@@ -355,24 +357,24 @@ impl Renderer {
         self.ctx.fill();
     }
 
-    fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport) {
+    fn draw_stroke(&self, stroke: &InkStroke, xform: stonepen_core::xform::Xform2D, vp: &Viewport) {
         self.draw_pts(
             &stroke.pts,
             &stroke.brush,
-            stroke.xform,
+            xform,
             vp,
             Some((stroke.id, stroke.geom_rev)),
         );
     }
 
-    fn draw_preview(&self, pts: &[InkPoint], brush: &stonepen_core::brush::Brush, vp: &Viewport) {
-        self.draw_pts(
-            pts,
-            brush,
-            stonepen_core::xform::Xform2D::identity(),
-            vp,
-            None,
-        );
+    fn draw_preview(
+        &self,
+        pts: &[InkPoint],
+        xform: stonepen_core::xform::Xform2D,
+        brush: &stonepen_core::brush::Brush,
+        vp: &Viewport,
+    ) {
+        self.draw_pts(pts, brush, xform, vp, None);
     }
 
     fn draw_lasso(&self, poly: &[Point2], vp: &Viewport) {

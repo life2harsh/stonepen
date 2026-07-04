@@ -4,6 +4,15 @@ use crate::stroke::InkStroke;
 use crate::xform::Xform2D;
 
 pub fn stroke_hit(stroke: &InkStroke, pos: Point2, radius: f32) -> bool {
+    stroke_hit_with_xform(stroke, stroke.xform, pos, radius)
+}
+
+pub fn stroke_hit_with_xform(
+    stroke: &InkStroke,
+    eff_xf: Xform2D,
+    pos: Point2,
+    radius: f32,
+) -> bool {
     let world_bbox = stroke.world_bbox;
     let padded_min_x = world_bbox.min_x - radius;
     let padded_min_y = world_bbox.min_y - radius;
@@ -13,24 +22,13 @@ pub fn stroke_hit(stroke: &InkStroke, pos: Point2, radius: f32) -> bool {
     {
         return false;
     }
-    let inv_xform = invert_xform(stroke.xform);
-    let local_pos = inv_xform.apply(pos);
-    polyline_hit(&stroke.pts, local_pos, radius)
-}
-
-fn invert_xform(xf: Xform2D) -> Xform2D {
-    let det = xf.a * xf.d - xf.b * xf.c;
-    if det.abs() < 1e-10 {
-        return Xform2D::identity();
-    }
-    let inv_det = 1.0 / det;
-    Xform2D {
-        a: xf.d * inv_det,
-        b: -xf.b * inv_det,
-        c: -xf.c * inv_det,
-        d: xf.a * inv_det,
-        tx: (xf.c * xf.ty - xf.d * xf.tx) * inv_det,
-        ty: (xf.b * xf.tx - xf.a * xf.ty) * inv_det,
+    if let Some(inv_xform) = eff_xf.inverse() {
+        let local_pos = inv_xform.apply(pos);
+        let scale = crate::xform::xform_scale(eff_xf).max(0.001);
+        let local_radius = radius / scale;
+        polyline_hit(&stroke.pts, local_pos, local_radius)
+    } else {
+        false
     }
 }
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bbox::BBox;
 use crate::brush::Brush;
-use crate::ids::StrokeId;
+use crate::ids::{ItemId, StrokeId};
 use crate::point::{InkPoint, PointerKind};
 use crate::smooth::smooth_pts;
 use crate::xform::Xform2D;
@@ -10,6 +10,8 @@ use crate::xform::Xform2D;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InkStroke {
     pub id: StrokeId,
+    #[serde(default)]
+    pub parent_id: Option<ItemId>,
     pub brush: Brush,
     pub raw_pts: Vec<InkPoint>,
     pub pts: Vec<InkPoint>,
@@ -94,7 +96,7 @@ impl StrokeBuilder {
         &self.pts
     }
 
-    pub fn finish(self, now_ms: i64) -> Option<InkStroke> {
+    pub fn finish(self, now_ms: i64, parent_id: Option<ItemId>) -> Option<InkStroke> {
         if self.pts.is_empty() {
             return None;
         }
@@ -103,6 +105,7 @@ impl StrokeBuilder {
         let world_bbox = xform.apply_bbox(local_bbox);
         Some(InkStroke {
             id: StrokeId::new(),
+            parent_id,
             brush: self.brush,
             raw_pts: self.raw_pts,
             pts: self.pts,

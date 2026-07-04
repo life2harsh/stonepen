@@ -30,7 +30,7 @@ pub fn export_svg(doc: &InkDoc) -> Result<String, InkError> {
                     let opacity = stroke.brush.opacity;
                     let stroke_w = stroke.brush.base_w;
                     let (r, g, b, a) = (color.r, color.g, color.b, color.a as f32 / 255.0);
-                    let xf = stroke.xform;
+                    let xf = doc.effective_xform(stroke.id);
                     let transform = xform_to_svg(xf);
                     out.push_str(&format!(
                         r#"    <path d="{}" stroke="rgba({},{},{},{:.3})" stroke-width="{}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="{:.3}" transform="{}" />"#,

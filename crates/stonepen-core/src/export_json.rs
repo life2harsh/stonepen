@@ -52,7 +52,7 @@ struct InkLayerMigration {
 
 #[derive(Deserialize)]
 struct InkDocMigration {
-    schema_version: Option<u32>,
+    _schema_version: Option<u32>,
     id: DocId,
     width: f32,
     height: f32,
@@ -79,7 +79,7 @@ pub fn serialize_doc(doc: &InkDoc) -> Result<String, InkError> {
         .collect();
 
     let serializable = InkDocSerialization {
-        schema_version: 2,
+        schema_version: 3,
         id: doc.id,
         width: doc.width,
         height: doc.height,
@@ -133,9 +133,18 @@ pub fn deserialize_doc(json: &str) -> Result<InkDoc, InkError> {
         });
     }
 
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut image_ids = std::collections::HashSet::new();
+
     for layer in &layers {
         for item in &layer.items {
+            if !seen_ids.insert(item.id()) {
+                return Err(InkError::Serialize(serde::de::Error::custom(
+                    "duplicate ItemId detected",
+                )));
+            }
             if let InkItem::Image(img) = item {
+                image_ids.insert(img.id);
                 if !assets.iter().any(|a| a.id == img.asset_id) {
                     return Err(InkError::Serialize(serde::de::Error::custom(
                         "missing asset reference",
@@ -145,8 +154,27 @@ pub fn deserialize_doc(json: &str) -> Result<InkDoc, InkError> {
         }
     }
 
+    for layer in &layers {
+        for item in &layer.items {
+            if let InkItem::Stroke(s) = item {
+                if let Some(pid) = s.parent_id {
+                    if pid == s.id {
+                        return Err(InkError::Serialize(serde::de::Error::custom(
+                            "self-parenting detected",
+                        )));
+                    }
+                    if !image_ids.contains(&pid) {
+                        return Err(InkError::Serialize(serde::de::Error::custom(
+                            "parent not found or parent is not an image",
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
     let mut doc = InkDoc {
-        schema_version: raw.schema_version.unwrap_or(1),
+        schema_version: 3,
         id: raw.id,
         width: raw.width,
         height: raw.height,
