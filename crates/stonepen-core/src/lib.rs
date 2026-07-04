@@ -739,12 +739,89 @@ mod tests {
             make_ink_point(10.0, 0.0),
         ];
         let low = smooth::adaptive_catmull_rom(&pts, 1.0);
-        let high = smooth::adaptive_catmull_rom(&pts, 10000.0);
+        let high = smooth::adaptive_catmull_rom(&pts, 100.0);
         assert!(high.len() > low.len());
-        assert!(high.len() < 10000);
+        assert!(high.len() < smooth::MAX_OUTPUT_PTS);
         for p in &high {
             assert!(p.x.is_finite());
             assert!(p.y.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_strict_point_limit_and_tessellation() {
+        let mut pts = Vec::new();
+        for i in 0..100 {
+            let x = i as f32;
+            let y = if i % 2 == 0 { 10.0 } else { 0.0 };
+            pts.push(make_ink_point(x, y));
+        }
+        let res = smooth::adaptive_catmull_rom(&pts, 100000.0);
+        assert!(res.len() <= smooth::MAX_OUTPUT_PTS);
+        assert!(res.len() > 100);
+        for p in &res {
+            assert!(p.x.is_finite());
+            assert!(p.y.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_final_endpoint_preserved_under_budget_pressure() {
+        let mut pts = Vec::new();
+        for i in 0..150 {
+            let x = i as f32;
+            let y = if i % 2 == 0 { 20.0 } else { 0.0 };
+            pts.push(make_ink_point(x, y));
+        }
+        let first_in = pts[0];
+        let last_in = pts[pts.len() - 1];
+        let res = smooth::adaptive_catmull_rom(&pts, 1000000.0);
+        assert!(res.len() <= smooth::MAX_OUTPUT_PTS);
+        assert_eq!(res[0].x, first_in.x);
+        assert_eq!(res[0].y, first_in.y);
+        let last_out = res[res.len() - 1];
+        assert!((last_out.x - last_in.x).abs() < 1e-4);
+        assert!((last_out.y - last_in.y).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_no_stroke_suffix_truncation() {
+        let mut pts = Vec::new();
+        for i in 0..120 {
+            let x = i as f32 * 0.1;
+            let y = if i % 2 == 0 { 5.0 } else { 0.0 };
+            pts.push(make_ink_point(x, y));
+        }
+        pts.push(make_ink_point(1000.0, 0.0));
+        let res = smooth::adaptive_catmull_rom(&pts, 1000000.0);
+        assert!(res.len() <= smooth::MAX_OUTPUT_PTS);
+        let has_suffix = res.iter().any(|p| p.x > 900.0);
+        assert!(has_suffix, "Suffix was truncated");
+        let last_out = res[res.len() - 1];
+        assert!((last_out.x - 1000.0).abs() < 1e-4);
+        assert!((last_out.y - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_finite_and_ordered_under_budget() {
+        let mut pts = Vec::new();
+        for i in 0..200 {
+            let x = i as f32;
+            let y = if i % 2 == 0 { 50.0 } else { 0.0 };
+            pts.push(make_ink_point(x, y));
+        }
+        let res = smooth::adaptive_catmull_rom(&pts, 1000000.0);
+        assert!(res.len() <= smooth::MAX_OUTPUT_PTS);
+        for i in 0..res.len() - 1 {
+            assert!(res[i].x.is_finite());
+            assert!(res[i].y.is_finite());
+            let dx = res[i + 1].x - res[i].x;
+            let dy = res[i + 1].y - res[i].y;
+            assert!(
+                dx * dx + dy * dy >= 1e-12,
+                "Duplicate adjacent point found at index {}",
+                i
+            );
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::point::InkPoint;
 
 const MAX_DEPTH: usize = 10;
-const MAX_OUTPUT_PTS: usize = 10000;
+pub(crate) const MAX_OUTPUT_PTS: usize = 10000;
 const MAX_ERR_PX: f32 = 0.35;
 
 pub fn smooth_pts(pts: &[InkPoint], factor: f32) -> Vec<InkPoint> {
@@ -42,7 +42,11 @@ pub fn adaptive_catmull_rom(pts: &[InkPoint], effective_zoom: f32) -> Vec<InkPoi
     let tolerance = MAX_ERR_PX / effective_zoom;
     let mut out = Vec::new();
     out.push(pts[0]);
-    for i in 0..pts.len() - 1 {
+    let n = pts.len();
+    for i in 0..n - 1 {
+        if out.len() >= MAX_OUTPUT_PTS {
+            break;
+        }
         let p1 = pts[i];
         let p2 = pts[i + 1];
         let p0 = if i == 0 {
@@ -50,7 +54,7 @@ pub fn adaptive_catmull_rom(pts: &[InkPoint], effective_zoom: f32) -> Vec<InkPoi
         } else {
             pts[i - 1]
         };
-        let p3 = if i + 1 == pts.len() - 1 {
+        let p3 = if i + 1 == n - 1 {
             extrapolate_pt(p1, p2, 2.0)
         } else {
             pts[i + 2]
@@ -66,25 +70,65 @@ pub fn adaptive_catmull_rom(pts: &[InkPoint], effective_zoom: f32) -> Vec<InkPoi
         let t1 = get_t(p0, p1, t0);
         let t2 = get_t(p1, p2, t1);
         let t3 = get_t(p2, p3, t2);
+
+        let reserved = n.saturating_sub(i + 2);
+        let max_allowed = if MAX_OUTPUT_PTS > reserved {
+            (MAX_OUTPUT_PTS - reserved).clamp(out.len() + 1, MAX_OUTPUT_PTS)
+        } else {
+            out.len() + 1
+        };
+
         if (t1 - t0).abs() < 1e-4 || (t2 - t1).abs() < 1e-4 || (t3 - t2).abs() < 1e-4 {
             let last = p2;
-            if let Some(last_p) = out.last() {
-                let dx = last.x - last_p.x;
-                let dy = last.y - last_p.y;
-                if dx * dx + dy * dy >= 1e-6 {
+            if out.len() < max_allowed {
+                if let Some(last_p) = out.last() {
+                    let dx = last.x - last_p.x;
+                    let dy = last.y - last_p.y;
+                    if dx * dx + dy * dy >= 1e-6 {
+                        out.push(last);
+                    }
+                } else {
                     out.push(last);
                 }
-            } else {
-                out.push(last);
             }
         } else {
             recursive_subdivide(
-                p0, p1, p2, p3, t0, t1, t2, t3, t1, t2, p1, p2, tolerance, 0, &mut out,
+                p0,
+                p1,
+                p2,
+                p3,
+                t0,
+                t1,
+                t2,
+                t3,
+                t1,
+                t2,
+                p1,
+                p2,
+                tolerance,
+                0,
+                max_allowed,
+                &mut out,
             );
         }
-        if out.len() >= MAX_OUTPUT_PTS {
-            break;
+    }
+
+    let final_input = pts[n - 1];
+    if let Some(&last_out) = out.last() {
+        let dx = final_input.x - last_out.x;
+        let dy = final_input.y - last_out.y;
+        const END_EPS_SQ: f32 = 1e-10;
+        if dx * dx + dy * dy > END_EPS_SQ {
+            if out.len() < MAX_OUTPUT_PTS {
+                out.push(final_input);
+            } else {
+                if let Some(last_mut) = out.last_mut() {
+                    *last_mut = final_input;
+                }
+            }
         }
+    } else {
+        out.push(final_input);
     }
     out
 }
@@ -169,18 +213,21 @@ fn recursive_subdivide(
     pt_b: InkPoint,
     tolerance: f32,
     depth: usize,
+    max_allowed: usize,
     out: &mut Vec<InkPoint>,
 ) {
-    if depth >= MAX_DEPTH || out.len() >= MAX_OUTPUT_PTS {
+    if depth >= MAX_DEPTH || out.len() + 1 >= max_allowed {
         let last = pt_b;
-        if let Some(last_p) = out.last() {
-            let dx = last.x - last_p.x;
-            let dy = last.y - last_p.y;
-            if dx * dx + dy * dy >= 1e-6 {
+        if out.len() < max_allowed {
+            if let Some(last_p) = out.last() {
+                let dx = last.x - last_p.x;
+                let dy = last.y - last_p.y;
+                if dx * dx + dy * dy >= 1e-6 {
+                    out.push(last);
+                }
+            } else {
                 out.push(last);
             }
-        } else {
-            out.push(last);
         }
         return;
     }
@@ -213,6 +260,7 @@ fn recursive_subdivide(
             pt_m,
             tolerance,
             depth + 1,
+            max_allowed,
             out,
         );
         recursive_subdivide(
@@ -230,6 +278,7 @@ fn recursive_subdivide(
             pt_b,
             tolerance,
             depth + 1,
+            max_allowed,
             out,
         );
     } else {
