@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use stonepen_core::brush::BrushKind;
 use stonepen_core::doc::{InkBackground, InkDoc};
 use stonepen_core::ids::StrokeId;
@@ -9,9 +10,37 @@ use stonepen_core::stroke::InkStroke;
 use stonepen_core::viewport::Viewport;
 use web_sys::CanvasRenderingContext2d;
 
+struct StrokeCacheEntry {
+    geom_rev: u64,
+    buckets: HashMap<i32, Rc<Vec<Point2>>>,
+    recent_buckets: VecDeque<i32>,
+}
+
+impl StrokeCacheEntry {
+    fn new(geom_rev: u64) -> Self {
+        Self {
+            geom_rev,
+            buckets: HashMap::new(),
+            recent_buckets: VecDeque::new(),
+        }
+    }
+
+    fn insert(&mut self, zoom_bucket: i32, outline: Rc<Vec<Point2>>) {
+        if !self.buckets.contains_key(&zoom_bucket) {
+            if self.recent_buckets.len() >= 4 {
+                if let Some(old_bucket) = self.recent_buckets.pop_front() {
+                    self.buckets.remove(&old_bucket);
+                }
+            }
+            self.recent_buckets.push_back(zoom_bucket);
+        }
+        self.buckets.insert(zoom_bucket, outline);
+    }
+}
+
 pub struct Renderer {
     pub ctx: CanvasRenderingContext2d,
-    cache: RefCell<HashMap<(StrokeId, i64, i32), Vec<Point2>>>,
+    cache: RefCell<HashMap<StrokeId, StrokeCacheEntry>>,
 }
 
 impl Renderer {
@@ -31,6 +60,10 @@ impl Renderer {
         canvas_w: f64,
         canvas_h: f64,
     ) {
+        {
+            let mut cache = self.cache.borrow_mut();
+            cache.retain(|sid, _| session.doc.get_stroke(*sid).is_some());
+        }
         let dpr = vp.dpr as f64;
         let _ = self.ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
         self.clear(canvas_w, canvas_h);
@@ -162,25 +195,35 @@ impl Renderer {
         brush: &stonepen_core::brush::Brush,
         xform: stonepen_core::xform::Xform2D,
         vp: &Viewport,
-        stroke_id_opt: Option<(stonepen_core::ids::StrokeId, i64)>,
+        stroke_id_opt: Option<(stonepen_core::ids::StrokeId, u64)>,
     ) {
         if pts.is_empty() {
             return;
         }
-        let zoom_bucket = (vp.zoom.log2() * 4.0).round() as i32;
-        let outline = if let Some((id, updated_at_ms)) = stroke_id_opt {
-            let key = (id, updated_at_ms, zoom_bucket);
+        let effective_zoom = vp.zoom * stonepen_core::geom::xform_scale(xform);
+        let zoom_bucket = (effective_zoom.log2() * 4.0).round() as i32;
+        let outline = if let Some((id, geom_rev)) = stroke_id_opt {
             let mut cache = self.cache.borrow_mut();
-            if let Some(cached) = cache.get(&key) {
+            let entry = cache
+                .entry(id)
+                .or_insert_with(|| StrokeCacheEntry::new(geom_rev));
+            if entry.geom_rev != geom_rev {
+                entry.geom_rev = geom_rev;
+                entry.buckets.clear();
+                entry.recent_buckets.clear();
+            }
+            if let Some(cached) = entry.buckets.get(&zoom_bucket) {
                 cached.clone()
             } else {
-                let centerline = stonepen_core::smooth::adaptive_catmull_rom(pts, vp.zoom);
+                let centerline = stonepen_core::smooth::adaptive_catmull_rom(pts, effective_zoom);
                 let radius_world = brush.base_w * 0.5;
-                let radius_screen = radius_world * vp.zoom;
+                let radius_screen = radius_world * effective_zoom;
                 let cap_segments = ((radius_screen * 1.5).round() as usize).clamp(8, 64);
-                let o = stonepen_core::geom::generate_stroke_outline(&centerline, brush, cap_segments)
-                    .unwrap_or_default();
-                cache.insert(key, o.clone());
+                let o = Rc::new(
+                    stonepen_core::geom::generate_stroke_outline(&centerline, brush, cap_segments)
+                        .unwrap_or_default(),
+                );
+                entry.insert(zoom_bucket, o.clone());
                 o
             }
         } else {
@@ -188,8 +231,10 @@ impl Renderer {
             let radius_world = brush.base_w * 0.5;
             let radius_screen = radius_world * vp.zoom;
             let cap_segments = ((radius_screen * 1.5).round() as usize).clamp(8, 64);
-            stonepen_core::geom::generate_stroke_outline(&centerline, brush, cap_segments)
-                .unwrap_or_default()
+            Rc::new(
+                stonepen_core::geom::generate_stroke_outline(&centerline, brush, cap_segments)
+                    .unwrap_or_default(),
+            )
         };
         if outline.is_empty() {
             return;
@@ -215,7 +260,7 @@ impl Renderer {
             &stroke.brush,
             stroke.xform,
             vp,
-            Some((stroke.id, stroke.updated_at_ms)),
+            Some((stroke.id, stroke.geom_rev)),
         );
         if selected {
             self.draw_selection_outline(stroke, vp);

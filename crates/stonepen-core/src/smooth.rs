@@ -31,12 +31,12 @@ pub fn filter_pressure(pts: &mut [InkPoint], alpha: f32) {
     }
 }
 
-pub fn adaptive_catmull_rom(pts: &[InkPoint], zoom: f32) -> Vec<InkPoint> {
+pub fn adaptive_catmull_rom(pts: &[InkPoint], effective_zoom: f32) -> Vec<InkPoint> {
     if pts.len() < 2 {
         return pts.to_vec();
     }
     let max_err_px = 0.35f32;
-    let tolerance = max_err_px / zoom;
+    let tolerance = max_err_px / effective_zoom;
     let mut out = Vec::new();
     out.push(pts[0]);
     for i in 0..pts.len() - 1 {
@@ -64,7 +64,16 @@ pub fn adaptive_catmull_rom(pts: &[InkPoint], zoom: f32) -> Vec<InkPoint> {
         let t2 = get_t(p1, p2, t1);
         let t3 = get_t(p2, p3, t2);
         if (t1 - t0).abs() < 1e-4 || (t2 - t1).abs() < 1e-4 || (t3 - t2).abs() < 1e-4 {
-            out.push(p2);
+            let last = p2;
+            if let Some(last_p) = out.last() {
+                let dx = last.x - last_p.x;
+                let dy = last.y - last_p.y;
+                if dx * dx + dy * dy >= 1e-6 {
+                    out.push(last);
+                }
+            } else {
+                out.push(last);
+            }
         } else {
             recursive_subdivide(
                 p0, p1, p2, p3, t0, t1, t2, t3, t1, t2, p1, p2, tolerance, 0, &mut out,
@@ -120,6 +129,25 @@ fn eval_catmull_rom_knots(
     }
 }
 
+fn point_to_segment_dist(pt: InkPoint, pt_a: InkPoint, pt_b: InkPoint) -> f32 {
+    let dx = pt_b.x - pt_a.x;
+    let dy = pt_b.y - pt_a.y;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-6 {
+        let mx = pt.x - pt_a.x;
+        let my = pt.y - pt_a.y;
+        (mx * mx + my * my).sqrt()
+    } else {
+        let t = ((pt.x - pt_a.x) * dx + (pt.y - pt_a.y) * dy) / len_sq;
+        let t_clamped = t.clamp(0.0, 1.0);
+        let px = pt_a.x + t_clamped * dx;
+        let py = pt_a.y + t_clamped * dy;
+        let mx = pt.x - px;
+        let my = pt.y - py;
+        (mx * mx + my * my).sqrt()
+    }
+}
+
 fn recursive_subdivide(
     p0: InkPoint,
     p1: InkPoint,
@@ -138,35 +166,76 @@ fn recursive_subdivide(
     out: &mut Vec<InkPoint>,
 ) {
     if depth >= 6 {
-        out.push(pt_b);
+        let last = pt_b;
+        if let Some(last_p) = out.last() {
+            let dx = last.x - last_p.x;
+            let dy = last.y - last_p.y;
+            if dx * dx + dy * dy >= 1e-6 {
+                out.push(last);
+            }
+        } else {
+            out.push(last);
+        }
         return;
     }
-    let tm = (ta + tb) * 0.5;
-    let pt_m = eval_catmull_rom_knots(p0, p1, p2, p3, t0, t1, t2, t3, tm);
-    let dx = pt_b.x - pt_a.x;
-    let dy = pt_b.y - pt_a.y;
-    let len_sq = dx * dx + dy * dy;
-    let dist = if len_sq < 1e-6 {
-        let mx = pt_m.x - pt_a.x;
-        let my = pt_m.y - pt_a.y;
-        (mx * mx + my * my).sqrt()
-    } else {
-        let t = ((pt_m.x - pt_a.x) * dx + (pt_m.y - pt_a.y) * dy) / len_sq;
-        let t_clamped = t.clamp(0.0, 1.0);
-        let px = pt_a.x + t_clamped * dx;
-        let py = pt_a.y + t_clamped * dy;
-        let mx = pt_m.x - px;
-        let my = pt_m.y - py;
-        (mx * mx + my * my).sqrt()
-    };
-    if dist > tolerance {
+    let t_diff = tb - ta;
+    let t25 = ta + 0.25 * t_diff;
+    let t50 = ta + 0.50 * t_diff;
+    let t75 = ta + 0.75 * t_diff;
+    let pt25 = eval_catmull_rom_knots(p0, p1, p2, p3, t0, t1, t2, t3, t25);
+    let pt50 = eval_catmull_rom_knots(p0, p1, p2, p3, t0, t1, t2, t3, t50);
+    let pt75 = eval_catmull_rom_knots(p0, p1, p2, p3, t0, t1, t2, t3, t75);
+    let d25 = point_to_segment_dist(pt25, pt_a, pt_b);
+    let d50 = point_to_segment_dist(pt50, pt_a, pt_b);
+    let d75 = point_to_segment_dist(pt75, pt_a, pt_b);
+    let max_dist = d25.max(d50).max(d75);
+    if max_dist > tolerance {
+        let tm = (ta + tb) * 0.5;
+        let pt_m = eval_catmull_rom_knots(p0, p1, p2, p3, t0, t1, t2, t3, tm);
         recursive_subdivide(
-            p0, p1, p2, p3, t0, t1, t2, t3, ta, tm, pt_a, pt_m, tolerance, depth + 1, out,
+            p0,
+            p1,
+            p2,
+            p3,
+            t0,
+            t1,
+            t2,
+            t3,
+            ta,
+            tm,
+            pt_a,
+            pt_m,
+            tolerance,
+            depth + 1,
+            out,
         );
         recursive_subdivide(
-            p0, p1, p2, p3, t0, t1, t2, t3, tm, tb, pt_m, pt_b, tolerance, depth + 1, out,
+            p0,
+            p1,
+            p2,
+            p3,
+            t0,
+            t1,
+            t2,
+            t3,
+            tm,
+            tb,
+            pt_m,
+            pt_b,
+            tolerance,
+            depth + 1,
+            out,
         );
     } else {
-        out.push(pt_b);
+        let last = pt_b;
+        if let Some(last_p) = out.last() {
+            let dx = last.x - last_p.x;
+            let dy = last.y - last_p.y;
+            if dx * dx + dy * dy >= 1e-6 {
+                out.push(last);
+            }
+        } else {
+            out.push(last);
+        }
     }
 }

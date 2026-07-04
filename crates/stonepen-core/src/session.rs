@@ -222,8 +222,12 @@ impl InkSession {
                 for &sid in stroke_ids {
                     if let Some(stroke) = self.doc.get_stroke_mut(sid) {
                         stroke.brush = after.clone();
+                        stroke.geom_rev += 1;
+                        stroke.recompute_local_bbox();
+                        stroke.recompute_world_bbox();
                     }
                 }
+                self.doc.rebuild_runtime();
             }
             InkOp::ClearLayer { layer_id, .. } => {
                 self.doc.clear_layer(*layer_id);

@@ -18,11 +18,18 @@ pub struct InkStroke {
     pub xform: Xform2D,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    #[serde(default)]
+    pub geom_rev: u64,
 }
 
 impl InkStroke {
     pub fn recompute_world_bbox(&mut self) {
         self.world_bbox = self.xform.apply_bbox(self.local_bbox);
+    }
+    pub fn recompute_local_bbox(&mut self) {
+        if let Some(bbox) = crate::geom::compute_conservative_stroke_bbox(&self.pts, &self.brush) {
+            self.local_bbox = bbox;
+        }
     }
 }
 
@@ -91,8 +98,7 @@ impl StrokeBuilder {
         if self.pts.is_empty() {
             return None;
         }
-        let half_w = self.brush.base_w * 0.5;
-        let local_bbox = crate::geom::compute_bbox(&self.pts, half_w + 2.0)?;
+        let local_bbox = crate::geom::compute_conservative_stroke_bbox(&self.pts, &self.brush)?;
         let xform = Xform2D::identity();
         let world_bbox = xform.apply_bbox(local_bbox);
         Some(InkStroke {
@@ -105,6 +111,7 @@ impl StrokeBuilder {
             xform,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
+            geom_rev: 0,
         })
     }
 }

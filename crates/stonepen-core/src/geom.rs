@@ -284,3 +284,29 @@ pub fn compute_outline_bbox(pts: &[Point2]) -> Option<BBox> {
         max_y,
     })
 }
+
+pub fn xform_scale(xf: crate::xform::Xform2D) -> f32 {
+    let scale_x = (xf.a * xf.a + xf.b * xf.b).sqrt();
+    let scale_y = (xf.c * xf.c + xf.d * xf.d).sqrt();
+    scale_x.max(scale_y).max(0.001)
+}
+
+pub fn compute_conservative_stroke_bbox(
+    pts: &[InkPoint],
+    brush: &crate::brush::Brush,
+) -> Option<BBox> {
+    if pts.is_empty() {
+        return None;
+    }
+    let effective_zoom = 10.0f32;
+    let tolerance = 0.35f32 / effective_zoom;
+    let centerline = crate::smooth::adaptive_catmull_rom(pts, effective_zoom);
+    let outline = generate_stroke_outline(&centerline, brush, 16)?;
+    let mut bbox = compute_outline_bbox(&outline)?;
+    let pad = tolerance + 0.1;
+    bbox.min_x -= pad;
+    bbox.min_y -= pad;
+    bbox.max_x += pad;
+    bbox.max_y += pad;
+    Some(bbox)
+}

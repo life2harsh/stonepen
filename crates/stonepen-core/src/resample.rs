@@ -4,45 +4,45 @@ pub fn resample_by_distance(pts: &[InkPoint], spacing: f32) -> Vec<InkPoint> {
     if pts.len() < 2 {
         return pts.to_vec();
     }
+    if spacing <= 0.001 {
+        return pts.to_vec();
+    }
+    let n = pts.len();
+    let mut dists = vec![0.0; n];
+    let mut total_len = 0.0;
+    for i in 1..n {
+        let dx = pts[i].x - pts[i - 1].x;
+        let dy = pts[i].y - pts[i - 1].y;
+        total_len += (dx * dx + dy * dy).sqrt();
+        dists[i] = total_len;
+    }
     let mut out = Vec::new();
     out.push(pts[0]);
-    let mut remain = spacing;
+    let mut target = spacing;
     let mut i = 0;
-    while i < pts.len() - 1 {
-        let p0 = pts[i];
-        let p1 = pts[i + 1];
-        let dx = p1.x - p0.x;
-        let dy = p1.y - p0.y;
-        let dist = (dx * dx + dy * dy).sqrt();
-        if dist < 1e-5 {
+    while target <= total_len {
+        while i < n - 1 && dists[i + 1] < target {
             i += 1;
-            continue;
         }
-        if dist >= remain {
-            let mut curr = p0;
-            let mut d = dist;
-            let mut rem = remain;
-            while d >= rem {
-                let t = rem / d;
-                let next_pt = interpolate_point(curr, p1, t);
-                out.push(next_pt);
-                curr = next_pt;
-                d = d - rem;
-                rem = spacing;
-            }
-            remain = rem;
-        } else {
-            remain -= dist;
+        if i >= n - 1 {
+            break;
         }
-        i += 1;
+        let d_seg = dists[i + 1] - dists[i];
+        if d_seg > 1e-5 {
+            let t = (target - dists[i]) / d_seg;
+            out.push(interpolate_point(pts[i], pts[i + 1], t));
+        }
+        target += spacing;
     }
-    let last = pts[pts.len() - 1];
+    let last = pts[n - 1];
     if let Some(&l) = out.last() {
         let dx = last.x - l.x;
         let dy = last.y - l.y;
         if (dx * dx + dy * dy).sqrt() > 0.1 {
             out.push(last);
         }
+    } else {
+        out.push(last);
     }
     out
 }

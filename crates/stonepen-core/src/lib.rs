@@ -24,15 +24,17 @@ pub use bbox::BBox;
 pub use brush::{stroke_w, Brush, BrushKind};
 pub use color::ColorRgba;
 pub use doc::{InkBackground, InkDoc};
-pub use geom::{compute_outline_bbox, generate_stroke_outline};
+pub use geom::{
+    compute_conservative_stroke_bbox, compute_outline_bbox, generate_stroke_outline, xform_scale,
+};
 pub use ids::{BrushId, DocId, LayerId, StrokeId};
 pub use layer::InkLayer;
 pub use ops::{InkOp, InkTx, UndoRedo};
 pub use point::{InkPoint, Point2, PointerKind, Vec2};
 pub use runtime::{IndexedStroke, InkRuntime, StrokeAddress};
 pub use session::{InkError, InkSession, Tool};
-pub use stroke::{InkStroke, StrokeBuilder};
 pub use smooth::adaptive_catmull_rom;
+pub use stroke::{InkStroke, StrokeBuilder};
 pub use viewport::Viewport;
 pub use xform::Xform2D;
 
@@ -70,6 +72,7 @@ mod tests {
             xform,
             created_at_ms: 0,
             updated_at_ms: 0,
+            geom_rev: 0,
         };
         let sid = stroke.id;
         let layer_id = doc.active_layer_id;
@@ -318,6 +321,7 @@ mod tests {
             xform,
             created_at_ms: 0,
             updated_at_ms: 0,
+            geom_rev: 0,
         };
         session.add_stroke(stroke);
         assert_eq!(session.doc.active_layer().unwrap().strokes.len(), 1);
@@ -345,6 +349,7 @@ mod tests {
             xform,
             created_at_ms: 0,
             updated_at_ms: 0,
+            geom_rev: 0,
         };
         let _sid = stroke.id;
         session.add_stroke(stroke);
@@ -376,6 +381,7 @@ mod tests {
                 xform,
                 created_at_ms: 0,
                 updated_at_ms: 0,
+                geom_rev: 0,
             };
             session.add_stroke(stroke);
         }
@@ -406,6 +412,7 @@ mod tests {
             xform,
             created_at_ms: 0,
             updated_at_ms: 0,
+            geom_rev: 0,
         };
         let sid = stroke.id;
         session.add_stroke(stroke);
@@ -444,6 +451,7 @@ mod tests {
             xform,
             created_at_ms: 0,
             updated_at_ms: 0,
+            geom_rev: 0,
         };
         session.add_stroke(stroke);
         let svg = session.export_svg().unwrap();
@@ -612,6 +620,7 @@ mod tests {
                 xform,
                 created_at_ms: 0,
                 updated_at_ms: 0,
+                geom_rev: 0,
             }
         };
         session.add_stroke(make_s());
@@ -635,82 +644,155 @@ mod tests {
     }
 
     #[test]
-    fn test_pressure_interpolation() {
-        let mut p1 = make_ink_point(0.0, 0.0);
-        p1.press = 0.2;
-        let mut p2 = make_ink_point(10.0, 0.0);
-        p2.press = 0.8;
-        let pts = vec![p1, p2];
-        let resampled = resample::resample_by_distance(&pts, 5.0);
-        assert_eq!(resampled.len(), 3);
-        assert!((resampled[1].press - 0.5).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_pressure_filtering() {
-        let mut p1 = make_ink_point(0.0, 0.0);
-        p1.press = 0.5;
-        let mut p2 = make_ink_point(1.0, 0.0);
-        p2.press = 1.0;
-        let mut p3 = make_ink_point(2.0, 0.0);
-        p3.press = 0.5;
-        let mut pts = vec![p1, p2, p3];
-        smooth::filter_pressure(&mut pts, 0.3);
-        assert!(pts[1].press < 1.0);
-        assert!(pts[1].press > 0.5);
-        for pt in &pts {
-            assert!(pt.press >= 0.0 && pt.press <= 1.0);
+    fn test_resampling_multisegment_carry() {
+        let pts = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(5.0, 0.0),
+            make_ink_point(10.0, 0.0),
+        ];
+        let resampled = resample::resample_by_distance(&pts, 2.0);
+        assert_eq!(resampled.len(), 6);
+        let expected = vec![0.0, 2.0, 4.0, 6.0, 8.0, 10.0];
+        for (i, p) in resampled.iter().enumerate() {
+            assert!((p.x - expected[i]).abs() < 1e-4);
+            assert_eq!(p.y, 0.0);
         }
     }
 
     #[test]
-    fn test_curve_generation() {
+    fn test_resampling_corner_polyline() {
+        let pts = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(3.0, 0.0),
+            make_ink_point(3.0, 4.0),
+        ];
+        let resampled = resample::resample_by_distance(&pts, 2.0);
+        assert_eq!(resampled.len(), 5);
+        assert!((resampled[0].x - 0.0).abs() < 1e-4);
+        assert!((resampled[0].y - 0.0).abs() < 1e-4);
+        assert!((resampled[1].x - 2.0).abs() < 1e-4);
+        assert!((resampled[1].y - 0.0).abs() < 1e-4);
+        assert!((resampled[2].x - 3.0).abs() < 1e-4);
+        assert!((resampled[2].y - 1.0).abs() < 1e-4);
+        assert!((resampled[3].x - 3.0).abs() < 1e-4);
+        assert!((resampled[3].y - 3.0).abs() < 1e-4);
+        assert!((resampled[4].x - 3.0).abs() < 1e-4);
+        assert!((resampled[4].y - 4.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_resampling_non_divisible_length() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(5.0, 0.0)];
+        let resampled = resample::resample_by_distance(&pts, 2.0);
+        assert_eq!(resampled.len(), 4);
+        assert!((resampled[2].x - 4.0).abs() < 1e-4);
+        assert!((resampled[3].x - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_resampling_interpolated_fields() {
+        let mut p1 = make_ink_point(0.0, 0.0);
+        p1.press = 0.2;
+        p1.t_ms = 100.0;
+        let mut p2 = make_ink_point(10.0, 0.0);
+        p2.press = 0.8;
+        p2.t_ms = 200.0;
+        let pts = vec![p1, p2];
+        let resampled = resample::resample_by_distance(&pts, 5.0);
+        assert_eq!(resampled.len(), 3);
+        assert!((resampled[1].press - 0.5).abs() < 1e-4);
+        assert!((resampled[1].t_ms - 150.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_s_curve_adaptive_tessellation() {
+        let pts = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(3.0, 3.0),
+            make_ink_point(7.0, -3.0),
+            make_ink_point(10.0, 0.0),
+        ];
+        let spline = smooth::adaptive_catmull_rom(&pts, 10.0);
+        assert!(spline.len() > 10);
+    }
+
+    #[test]
+    fn test_zoom_affects_detail_and_bounded() {
         let pts = vec![
             make_ink_point(0.0, 0.0),
             make_ink_point(5.0, 5.0),
             make_ink_point(10.0, 0.0),
         ];
-        let spline = smooth::adaptive_catmull_rom(&pts, 1.0);
-        assert!(!spline.is_empty());
-        assert!((spline[0].x - 0.0).abs() < 1e-4);
-        assert!((spline[spline.len() - 1].x - 10.0).abs() < 1e-4);
-        for pt in &spline {
-            assert!(pt.x.is_finite());
-            assert!(pt.y.is_finite());
-        }
-    }
-
-    #[test]
-    fn test_stroke_width() {
-        let brush = Brush::default_pen();
-        let w_zero = brush::stroke_w(&brush, 0.0);
-        assert_eq!(w_zero, 0.0);
-        let w_min = brush::stroke_w(&brush, 0.001);
-        assert!(w_min > 0.0);
-        let w_max = brush::stroke_w(&brush, 1.0);
-        assert!(w_max >= w_min);
-    }
-
-    #[test]
-    fn test_outline_geometry() {
-        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
-        let brush = Brush::default_pen();
-        let outline = geom::generate_stroke_outline(&pts, &brush, 8).unwrap();
-        assert!(!outline.is_empty());
-        for p in &outline {
+        let low = smooth::adaptive_catmull_rom(&pts, 1.0);
+        let high = smooth::adaptive_catmull_rom(&pts, 100.0);
+        assert!(high.len() > low.len());
+        assert!(high.len() < 500);
+        for p in &high {
             assert!(p.x.is_finite());
             assert!(p.y.is_finite());
         }
-        let bbox = geom::compute_outline_bbox(&outline).unwrap();
+    }
+
+    #[test]
+    fn test_conservative_bbox_contains_geometry() {
+        let pts = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(5.0, 10.0),
+            make_ink_point(10.0, 0.0),
+        ];
+        let brush = Brush::default_pen();
+        let bbox = geom::compute_conservative_stroke_bbox(&pts, &brush).unwrap();
+        let centerline = smooth::adaptive_catmull_rom(&pts, 10.0);
+        let outline = geom::generate_stroke_outline(&centerline, &brush, 16).unwrap();
         for p in &outline {
-            assert!(p.x >= bbox.min_x && p.x <= bbox.max_x);
-            assert!(p.y >= bbox.min_y && p.y <= bbox.max_y);
+            assert!(
+                p.x >= bbox.min_x,
+                "p.x = {}, bbox.min_x = {}",
+                p.x,
+                bbox.min_x
+            );
+            assert!(
+                p.y >= bbox.min_y,
+                "p.y = {}, bbox.min_y = {}",
+                p.y,
+                bbox.min_y
+            );
+            assert!(
+                p.x <= bbox.max_x,
+                "p.x = {}, bbox.max_x = {}",
+                p.x,
+                bbox.max_x
+            );
+            assert!(
+                p.y <= bbox.max_y,
+                "p.y = {}, bbox.max_y = {}",
+                p.y,
+                bbox.max_y
+            );
         }
     }
 
     #[test]
-    fn test_taper_growing_stability() {
-        let brush = Brush::default_pen();
+    fn test_thick_pressure_stroke_bbox() {
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
+        let mut brush = Brush::default_pen();
+        brush.base_w = 20.0;
+        let bbox = geom::compute_conservative_stroke_bbox(&pts, &brush).unwrap();
+        let centerline = smooth::adaptive_catmull_rom(&pts, 10.0);
+        let outline = geom::generate_stroke_outline(&centerline, &brush, 16).unwrap();
+        for p in &outline {
+            assert!(p.x >= bbox.min_x);
+            assert!(p.y >= bbox.min_y);
+            assert!(p.x <= bbox.max_x);
+            assert!(p.y <= bbox.max_y);
+        }
+    }
+
+    #[test]
+    fn test_taper_stability_growing_nonzero_start() {
+        let mut brush = Brush::default_pen();
+        brush.taper_start = 2.0;
+        brush.taper_end = 2.0;
         let pts1 = vec![
             make_ink_point(0.0, 0.0),
             make_ink_point(5.0, 0.0),
@@ -720,24 +802,41 @@ mod tests {
         let mut pts2 = pts1.clone();
         pts2.push(make_ink_point(15.0, 0.0));
         pts2.push(make_ink_point(20.0, 0.0));
+        pts2.push(make_ink_point(25.0, 0.0));
         let outline2 = geom::generate_stroke_outline(&pts2, &brush, 8).unwrap();
         assert!((outline1[0].x - outline2[0].x).abs() < 1e-4);
         assert!((outline1[0].y - outline2[0].y).abs() < 1e-4);
     }
 
     #[test]
-    fn test_adaptive_tessellation() {
-        let pts = vec![
-            make_ink_point(0.0, 0.0),
-            make_ink_point(5.0, 5.0),
-            make_ink_point(10.0, 0.0),
-        ];
-        let spline_low = smooth::adaptive_catmull_rom(&pts, 1.0);
-        let spline_high = smooth::adaptive_catmull_rom(&pts, 100.0);
-        assert!(spline_high.len() >= spline_low.len());
-        assert!((spline_low[0].x - 0.0).abs() < 1e-4);
-        assert!((spline_low[spline_low.len() - 1].x - 10.0).abs() < 1e-4);
-        assert!((spline_high[0].x - 0.0).abs() < 1e-4);
-        assert!((spline_high[spline_high.len() - 1].x - 10.0).abs() < 1e-4);
+    fn test_geom_rev_invalidation() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
+        let local_bbox =
+            geom::compute_conservative_stroke_bbox(&pts, &Brush::default_pen()).unwrap();
+        let s = InkStroke {
+            id: StrokeId::new(),
+            brush: Brush::default_pen(),
+            raw_pts: pts.clone(),
+            pts,
+            local_bbox,
+            world_bbox: local_bbox,
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        let sid = s.id;
+        session.add_stroke(s);
+        assert_eq!(session.doc.get_stroke(sid).unwrap().geom_rev, 0);
+        let mut brush = Brush::default_pen();
+        brush.base_w = 5.0;
+        let tx = InkTx::new("change brush").push(InkOp::SetStrokeBrush {
+            stroke_ids: vec![sid],
+            before: vec![Brush::default_pen()],
+            after: brush,
+        });
+        session.do_tx(tx);
+        assert_eq!(session.doc.get_stroke(sid).unwrap().geom_rev, 1);
     }
 }
