@@ -1,5 +1,8 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use stonepen_core::brush::BrushKind;
 use stonepen_core::doc::{InkBackground, InkDoc};
+use stonepen_core::ids::StrokeId;
 use stonepen_core::point::{InkPoint, Point2};
 use stonepen_core::session::InkSession;
 use stonepen_core::stroke::InkStroke;
@@ -8,11 +11,15 @@ use web_sys::CanvasRenderingContext2d;
 
 pub struct Renderer {
     pub ctx: CanvasRenderingContext2d,
+    cache: RefCell<HashMap<(StrokeId, i64, i32), Vec<Point2>>>,
 }
 
 impl Renderer {
     pub fn new(ctx: CanvasRenderingContext2d) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            cache: RefCell::new(HashMap::new()),
+        }
     }
 
     pub fn render(
@@ -155,13 +162,34 @@ impl Renderer {
         brush: &stonepen_core::brush::Brush,
         xform: stonepen_core::xform::Xform2D,
         vp: &Viewport,
+        stroke_id_opt: Option<(stonepen_core::ids::StrokeId, i64)>,
     ) {
         if pts.is_empty() {
             return;
         }
-        let outline = match stonepen_core::geom::generate_stroke_outline(pts, brush) {
-            Some(o) => o,
-            None => return,
+        let zoom_bucket = (vp.zoom.log2() * 4.0).round() as i32;
+        let outline = if let Some((id, updated_at_ms)) = stroke_id_opt {
+            let key = (id, updated_at_ms, zoom_bucket);
+            let mut cache = self.cache.borrow_mut();
+            if let Some(cached) = cache.get(&key) {
+                cached.clone()
+            } else {
+                let centerline = stonepen_core::smooth::adaptive_catmull_rom(pts, vp.zoom);
+                let radius_world = brush.base_w * 0.5;
+                let radius_screen = radius_world * vp.zoom;
+                let cap_segments = ((radius_screen * 1.5).round() as usize).clamp(8, 64);
+                let o = stonepen_core::geom::generate_stroke_outline(&centerline, brush, cap_segments)
+                    .unwrap_or_default();
+                cache.insert(key, o.clone());
+                o
+            }
+        } else {
+            let centerline = stonepen_core::smooth::adaptive_catmull_rom(pts, vp.zoom);
+            let radius_world = brush.base_w * 0.5;
+            let radius_screen = radius_world * vp.zoom;
+            let cap_segments = ((radius_screen * 1.5).round() as usize).clamp(8, 64);
+            stonepen_core::geom::generate_stroke_outline(&centerline, brush, cap_segments)
+                .unwrap_or_default()
         };
         if outline.is_empty() {
             return;
@@ -182,7 +210,13 @@ impl Renderer {
     }
 
     fn draw_stroke(&self, stroke: &InkStroke, vp: &Viewport, selected: bool) {
-        self.draw_pts(&stroke.pts, &stroke.brush, stroke.xform, vp);
+        self.draw_pts(
+            &stroke.pts,
+            &stroke.brush,
+            stroke.xform,
+            vp,
+            Some((stroke.id, stroke.updated_at_ms)),
+        );
         if selected {
             self.draw_selection_outline(stroke, vp);
         }
@@ -208,7 +242,13 @@ impl Renderer {
     }
 
     fn draw_preview(&self, pts: &[InkPoint], brush: &stonepen_core::brush::Brush, vp: &Viewport) {
-        self.draw_pts(pts, brush, stonepen_core::xform::Xform2D::identity(), vp);
+        self.draw_pts(
+            pts,
+            brush,
+            stonepen_core::xform::Xform2D::identity(),
+            vp,
+            None,
+        );
     }
 
     fn draw_lasso(&self, poly: &[Point2], vp: &Viewport) {

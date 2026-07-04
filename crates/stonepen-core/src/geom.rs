@@ -139,6 +139,7 @@ pub fn xform_bbox(xform: crate::xform::Xform2D, bbox: BBox) -> BBox {
 pub fn generate_stroke_outline(
     pts: &[InkPoint],
     brush: &crate::brush::Brush,
+    cap_segments: usize,
 ) -> Option<Vec<Point2>> {
     if pts.is_empty() {
         return None;
@@ -147,9 +148,9 @@ pub fn generate_stroke_outline(
         let center = pts[0].pos();
         let r = crate::brush::stroke_w(brush, pts[0].press) * 0.5;
         let mut out = Vec::new();
-        const SEGMENTS: usize = 16;
-        for i in 0..SEGMENTS {
-            let angle = (i as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
+        let num_segments = cap_segments * 2;
+        for i in 0..num_segments {
+            let angle = (i as f32 / num_segments as f32) * std::f32::consts::TAU;
             out.push(Point2::new(
                 center.x + angle.cos() * r,
                 center.y + angle.sin() * r,
@@ -191,19 +192,15 @@ pub fn generate_stroke_outline(
         let t_vec = tangents[i];
         let normal = Point2::new(-t_vec.y, t_vec.x);
         let mut factor = 1.0f32;
-        if total_len > 0.001 {
-            if brush.taper_start > 0.0 {
-                let taper_start_len = brush.taper_start * total_len;
-                if dists[i] < taper_start_len {
-                    factor = factor.min(dists[i] / taper_start_len);
-                }
+        if brush.taper_start > 0.0 {
+            if dists[i] < brush.taper_start {
+                factor = factor.min(dists[i] / brush.taper_start);
             }
-            if brush.taper_end > 0.0 {
-                let taper_end_len = brush.taper_end * total_len;
-                let dist_from_end = total_len - dists[i];
-                if dist_from_end < taper_end_len {
-                    factor = factor.min(dist_from_end / taper_end_len);
-                }
+        }
+        if brush.taper_end > 0.0 {
+            let dist_from_end = total_len - dists[i];
+            if dist_from_end < brush.taper_end {
+                factor = factor.min(dist_from_end / brush.taper_end);
             }
         }
         let half_w = crate::brush::stroke_w(brush, pt.press) * factor * 0.5;
@@ -224,15 +221,11 @@ pub fn generate_stroke_outline(
     let end_tangent = tangents[n - 1];
     let end_angle = end_tangent.y.atan2(end_tangent.x);
     let end_r = crate::brush::stroke_w(brush, pts[n - 1].press) * 0.5;
-    let mut end_factor = 1.0f32;
-    if total_len > 0.001 && brush.taper_end > 0.0 {
-        end_factor = 0.0;
-    }
+    let end_factor = if brush.taper_end > 0.0 { 0.0 } else { 1.0 };
     let end_r = end_r * end_factor;
     if end_r > 0.01 {
-        const CAP_SEGMENTS: usize = 8;
-        for i in 1..CAP_SEGMENTS {
-            let t = i as f32 / CAP_SEGMENTS as f32;
+        for i in 1..cap_segments {
+            let t = i as f32 / cap_segments as f32;
             let angle = (end_angle + std::f32::consts::FRAC_PI_2) - t * std::f32::consts::PI;
             outline.push(Point2::new(
                 end_center.x + angle.cos() * end_r,
@@ -247,15 +240,11 @@ pub fn generate_stroke_outline(
     let start_tangent = tangents[0];
     let start_angle = start_tangent.y.atan2(start_tangent.x);
     let start_r = crate::brush::stroke_w(brush, pts[0].press) * 0.5;
-    let mut start_factor = 1.0f32;
-    if total_len > 0.001 && brush.taper_start > 0.0 {
-        start_factor = 0.0;
-    }
+    let start_factor = if brush.taper_start > 0.0 { 0.0 } else { 1.0 };
     let start_r = start_r * start_factor;
     if start_r > 0.01 {
-        const CAP_SEGMENTS: usize = 8;
-        for i in 1..CAP_SEGMENTS {
-            let t = i as f32 / CAP_SEGMENTS as f32;
+        for i in 1..cap_segments {
+            let t = i as f32 / cap_segments as f32;
             let angle = (start_angle - std::f32::consts::FRAC_PI_2) - t * std::f32::consts::PI;
             outline.push(Point2::new(
                 start_center.x + angle.cos() * start_r,

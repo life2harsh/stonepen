@@ -91,8 +91,8 @@ impl StrokeBuilder {
         if self.pts.is_empty() {
             return None;
         }
-        let outline = crate::geom::generate_stroke_outline(&self.pts, &self.brush)?;
-        let local_bbox = crate::geom::compute_outline_bbox(&outline)?;
+        let half_w = self.brush.base_w * 0.5;
+        let local_bbox = crate::geom::compute_bbox(&self.pts, half_w + 2.0)?;
         let xform = Xform2D::identity();
         let world_bbox = xform.apply_bbox(local_bbox);
         Some(InkStroke {

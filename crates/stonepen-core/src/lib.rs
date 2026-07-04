@@ -32,6 +32,7 @@ pub use point::{InkPoint, Point2, PointerKind, Vec2};
 pub use runtime::{IndexedStroke, InkRuntime, StrokeAddress};
 pub use session::{InkError, InkSession, Tool};
 pub use stroke::{InkStroke, StrokeBuilder};
+pub use smooth::adaptive_catmull_rom;
 pub use viewport::Viewport;
 pub use xform::Xform2D;
 
@@ -669,7 +670,7 @@ mod tests {
             make_ink_point(5.0, 5.0),
             make_ink_point(10.0, 0.0),
         ];
-        let spline = smooth::catmull_rom_spline(&pts, 4);
+        let spline = smooth::adaptive_catmull_rom(&pts, 1.0);
         assert!(!spline.is_empty());
         assert!((spline[0].x - 0.0).abs() < 1e-4);
         assert!((spline[spline.len() - 1].x - 10.0).abs() < 1e-4);
@@ -694,7 +695,7 @@ mod tests {
     fn test_outline_geometry() {
         let pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
         let brush = Brush::default_pen();
-        let outline = geom::generate_stroke_outline(&pts, &brush).unwrap();
+        let outline = geom::generate_stroke_outline(&pts, &brush, 8).unwrap();
         assert!(!outline.is_empty());
         for p in &outline {
             assert!(p.x.is_finite());
@@ -705,5 +706,38 @@ mod tests {
             assert!(p.x >= bbox.min_x && p.x <= bbox.max_x);
             assert!(p.y >= bbox.min_y && p.y <= bbox.max_y);
         }
+    }
+
+    #[test]
+    fn test_taper_growing_stability() {
+        let brush = Brush::default_pen();
+        let pts1 = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(5.0, 0.0),
+            make_ink_point(10.0, 0.0),
+        ];
+        let outline1 = geom::generate_stroke_outline(&pts1, &brush, 8).unwrap();
+        let mut pts2 = pts1.clone();
+        pts2.push(make_ink_point(15.0, 0.0));
+        pts2.push(make_ink_point(20.0, 0.0));
+        let outline2 = geom::generate_stroke_outline(&pts2, &brush, 8).unwrap();
+        assert!((outline1[0].x - outline2[0].x).abs() < 1e-4);
+        assert!((outline1[0].y - outline2[0].y).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_adaptive_tessellation() {
+        let pts = vec![
+            make_ink_point(0.0, 0.0),
+            make_ink_point(5.0, 5.0),
+            make_ink_point(10.0, 0.0),
+        ];
+        let spline_low = smooth::adaptive_catmull_rom(&pts, 1.0);
+        let spline_high = smooth::adaptive_catmull_rom(&pts, 100.0);
+        assert!(spline_high.len() >= spline_low.len());
+        assert!((spline_low[0].x - 0.0).abs() < 1e-4);
+        assert!((spline_low[spline_low.len() - 1].x - 10.0).abs() < 1e-4);
+        assert!((spline_high[0].x - 0.0).abs() < 1e-4);
+        assert!((spline_high[spline_high.len() - 1].x - 10.0).abs() < 1e-4);
     }
 }

@@ -40,8 +40,8 @@ impl Brush {
             max_press: 1.0,
             smooth: 0.5,
             streamline: 0.5,
-            taper_start: 0.1,
-            taper_end: 0.1,
+            taper_start: 0.0,
+            taper_end: 2.0,
         }
     }
 
