@@ -19,6 +19,22 @@ pub enum Command {
 }
 
 impl Command {
+    pub const ALL: [Command; 13] = [
+        Command::ToolPen,
+        Command::ToolPencil,
+        Command::ToolHighlighter,
+        Command::ToolEraser,
+        Command::ToolLasso,
+        Command::ToolSelect,
+        Command::ToolPan,
+        Command::Undo,
+        Command::Redo,
+        Command::DeleteSelection,
+        Command::DuplicateSelection,
+        Command::ClearSelection,
+        Command::HoldPan,
+    ];
+
     pub fn to_id(&self) -> &'static str {
         match self {
             Command::ToolPen => "tool_pen",
@@ -137,10 +153,10 @@ impl KeyChord {
             || code == "MetaRight"
     }
 
-    pub fn to_display_string(&self) -> String {
+    pub fn to_display_string(&self, is_mac: bool) -> String {
         let mut parts = Vec::new();
         if self.primary {
-            parts.push("Ctrl");
+            parts.push(if is_mac { "Cmd" } else { "Ctrl" });
         }
         if self.shift {
             parts.push("Shift");
@@ -259,13 +275,19 @@ impl AppSettings {
         }
     }
 
+    pub fn is_version_supported(version: u32) -> bool {
+        version == 1
+    }
+
     pub fn validate_and_repair(&mut self) {
         let mut clean_map = ShortcutMap::new();
-        for (cmd, chords) in &self.shortcuts.map {
-            for chord in chords {
-                if !chord.is_modifier_only() {
-                    if clean_map.detect_conflict(chord).is_none() {
-                        let _ = clean_map.add_binding(*cmd, chord.clone());
+        for cmd in &Command::ALL {
+            if let Some(chords) = self.shortcuts.map.get(cmd) {
+                for chord in chords {
+                    if !chord.is_modifier_only() {
+                        if clean_map.detect_conflict(chord).is_none() {
+                            let _ = clean_map.add_binding(*cmd, chord.clone());
+                        }
                     }
                 }
             }
@@ -275,6 +297,71 @@ impl AppSettings {
 }
 
 impl Default for AppSettings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempPanController {
+    pub trigger_code: Option<String>,
+    pub released: bool,
+}
+
+impl TempPanController {
+    pub fn new() -> Self {
+        Self {
+            trigger_code: None,
+            released: false,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.trigger_code.is_some()
+    }
+
+    pub fn handle_keydown(&mut self, code: &str, is_idle: bool) -> bool {
+        if self.is_active() {
+            return false;
+        }
+        if !is_idle {
+            return false;
+        }
+        self.trigger_code = Some(code.to_string());
+        self.released = false;
+        true
+    }
+
+    pub fn handle_keyup(&mut self, code: &str, is_dragging_pan: bool) -> bool {
+        if let Some(ref trigger) = self.trigger_code {
+            if trigger == code {
+                self.released = true;
+                if !is_dragging_pan {
+                    self.trigger_code = None;
+                    self.released = false;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn handle_gesture_end(&mut self) -> bool {
+        if self.released {
+            self.trigger_code = None;
+            self.released = false;
+            return true;
+        }
+        false
+    }
+
+    pub fn reset(&mut self) {
+        self.trigger_code = None;
+        self.released = false;
+    }
+}
+
+impl Default for TempPanController {
     fn default() -> Self {
         Self::new()
     }

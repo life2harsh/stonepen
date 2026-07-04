@@ -4,10 +4,23 @@ mod file_io;
 mod keyboard;
 mod pointer;
 mod render_2d;
+mod web_runtime;
+mod web_ui;
 
 use app::StonepenApp;
 use wasm_bindgen::prelude::*;
 use web_sys::{KeyboardEvent, PointerEvent, WheelEvent};
+
+/// Bootstrap entry point. JavaScript only needs to call this.
+/// Creates WebRuntime (owns all event closures and app state)
+/// and intentionally leaks it for the page lifetime.
+#[wasm_bindgen]
+pub fn start_stonepen(canvas_id: &str) -> Result<(), JsValue> {
+    let runtime = web_runtime::WebRuntime::new(canvas_id)?;
+    // Intentional page-lifetime leak: the runtime owns all closures and the app.
+    std::mem::forget(runtime);
+    Ok(())
+}
 
 #[wasm_bindgen]
 pub struct WasmApp {
@@ -52,6 +65,10 @@ impl WasmApp {
 
     pub fn on_blur(&mut self) {
         self.inner.on_blur();
+    }
+
+    pub fn reset_transient_input(&mut self) {
+        self.inner.reset_transient_input();
     }
 
     pub fn get_shortcuts_json(&self) -> String {

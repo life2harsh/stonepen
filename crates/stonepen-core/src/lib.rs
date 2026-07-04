@@ -37,7 +37,9 @@ pub use point::{InkPoint, Point2, PointerKind, Vec2};
 pub use runtime::InkRuntime;
 pub use sel::select_rect;
 pub use session::{InkError, InkSession, Tool};
-pub use shortcuts::{AppSettings, Command, ConflictError, KeyChord, ShortcutMap};
+pub use shortcuts::{
+    AppSettings, Command, ConflictError, KeyChord, ShortcutMap, TempPanController,
+};
 pub use smooth::adaptive_catmull_rom;
 pub use stroke::{InkStroke, StrokeBuilder};
 pub use viewport::Viewport;
@@ -2130,72 +2132,118 @@ mod tests {
     }
 
     #[test]
-    fn test_shortcuts_temp_pan_state_transitions() {
-        struct MockApp {
-            active_tool: Tool,
-            temp_pan_active: bool,
-            temp_pan_released: bool,
-            input_idle: bool,
+    fn test_command_all_completeness() {
+        use std::collections::HashSet;
+        let all_set: HashSet<&str> = Command::ALL.iter().map(|c| c.to_id()).collect();
+        // Verify all known commands appear exactly once
+        let expected = [
+            "tool_pen",
+            "tool_pencil",
+            "tool_highlighter",
+            "tool_eraser",
+            "tool_lasso",
+            "tool_select",
+            "tool_pan",
+            "undo",
+            "redo",
+            "delete_selection",
+            "duplicate_selection",
+            "clear_selection",
+            "hold_pan",
+        ];
+        for id in &expected {
+            assert!(all_set.contains(id), "Command::ALL missing: {}", id);
         }
-        impl MockApp {
-            fn effective_tool(&self) -> Tool {
-                if self.temp_pan_active {
-                    Tool::Pan
-                } else {
-                    self.active_tool.clone()
-                }
-            }
-            fn on_space_keydown(&mut self) {
-                if self.input_idle {
-                    self.temp_pan_active = true;
-                    self.temp_pan_released = false;
-                }
-            }
-            fn on_space_keyup(&mut self) {
-                if self.temp_pan_active {
-                    self.temp_pan_released = true;
-                    if self.input_idle {
-                        self.temp_pan_active = false;
-                    }
-                }
-            }
-            fn on_drag_start(&mut self) {
-                self.input_idle = false;
-            }
-            fn on_drag_end(&mut self) {
-                self.input_idle = true;
-                if self.temp_pan_released {
-                    self.temp_pan_active = false;
-                }
-            }
-        }
+        assert_eq!(Command::ALL.len(), expected.len());
+    }
 
-        let mut app = MockApp {
-            active_tool: Tool::Pen,
-            temp_pan_active: false,
-            temp_pan_released: false,
-            input_idle: true,
-        };
+    #[test]
+    fn test_shortcuts_stable_ordering() {
+        // Command::ALL is the single source of truth for ordering
+        assert_eq!(Command::ALL.len(), 13);
+        assert_eq!(Command::ALL[0].to_id(), "tool_pen");
+        assert_eq!(Command::ALL[12].to_id(), "hold_pan");
+    }
 
-        app.on_space_keydown();
-        assert_eq!(app.effective_tool(), Tool::Pan);
-        assert_eq!(app.active_tool, Tool::Pen);
+    #[test]
+    fn test_shortcuts_deterministic_repair() {
+        let mut settings = AppSettings::new();
+        settings
+            .shortcuts
+            .map
+            .insert(Command::Redo, vec![KeyChord::simple("KeyZ")]);
+        settings
+            .shortcuts
+            .map
+            .insert(Command::Undo, vec![KeyChord::simple("KeyZ")]);
 
-        app.on_space_keyup();
-        assert_eq!(app.effective_tool(), Tool::Pen);
+        settings.validate_and_repair();
 
-        app.active_tool = Tool::Pen;
-        app.on_drag_start();
-        app.on_space_keydown();
-        assert_eq!(app.effective_tool(), Tool::Pen);
-        app.on_drag_end();
+        // Undo is earlier in stable order than Redo, so Undo must keep KeyZ, and Redo must lose it.
+        assert_eq!(settings.shortcuts.bindings(Command::Undo).len(), 1);
+        assert_eq!(
+            settings.shortcuts.bindings(Command::Undo)[0],
+            KeyChord::simple("KeyZ")
+        );
+        assert!(settings.shortcuts.bindings(Command::Redo).is_empty());
+    }
 
-        app.on_space_keydown();
-        assert_eq!(app.effective_tool(), Tool::Pan);
-        app.on_drag_start();
-        app.on_space_keyup();
-        assert_eq!(app.effective_tool(), Tool::Pan);
-        app.on_drag_end();
-        assert_eq!(app.effective_tool(), Tool::Pen);
+    #[test]
+    fn test_settings_version_policy() {
+        assert!(
+            AppSettings::is_version_supported(1),
+            "version 1 must be accepted"
+        );
+        assert!(
+            !AppSettings::is_version_supported(0),
+            "version 0 must be rejected"
+        );
+        assert!(
+            !AppSettings::is_version_supported(2),
+            "version 2 must be rejected"
+        );
+        assert!(
+            !AppSettings::is_version_supported(999),
+            "version 999 must be rejected"
+        );
+        // Default settings have supported version
+        let s = AppSettings::new();
+        assert!(AppSettings::is_version_supported(s.version));
+    }
+
+    #[test]
+    fn test_temp_pan_controller_transitions() {
+        let mut ctrl = TempPanController::new();
+        assert!(!ctrl.is_active());
+
+        // 1. Keydown activates temporary Pan while idle
+        assert!(ctrl.handle_keydown("Space", true));
+        assert!(ctrl.is_active());
+
+        // 2. Repeated keydown does not reactivate
+        assert!(!ctrl.handle_keydown("Space", true));
+
+        // 3. Keyup while idle restores tool (deactivates)
+        assert!(ctrl.handle_keyup("Space", false));
+        assert!(!ctrl.is_active());
+
+        // 4. Keydown during active drawing (non-pan gesture) is ignored
+        assert!(!ctrl.handle_keydown("Space", false));
+        assert!(!ctrl.is_active());
+
+        // 5. Keyup during active Pan drag sets release pending
+        assert!(ctrl.handle_keydown("Space", true));
+        assert!(!ctrl.handle_keyup("Space", true));
+        assert!(ctrl.is_active());
+        assert!(ctrl.released);
+
+        // 6. Pointerup after pending release clears temporary Pan
+        assert!(ctrl.handle_gesture_end());
+        assert!(!ctrl.is_active());
+
+        // 7. Blur clears temporary Pan
+        assert!(ctrl.handle_keydown("Space", true));
+        ctrl.reset();
+        assert!(!ctrl.is_active());
     }
 }

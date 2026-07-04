@@ -17,13 +17,9 @@ use crate::file_io::{trigger_download, trigger_png_download};
 use crate::keyboard::parse_event_to_chord;
 use crate::pointer::{get_inputs, PointerInput};
 use crate::render_2d::Renderer;
-use stonepen_core::shortcuts::{AppSettings, Command, ConflictError, KeyChord, ShortcutMap};
-
-#[derive(Debug, Clone)]
-pub struct TempPanState {
-    pub trigger_code: String,
-    pub released: bool,
-}
+use stonepen_core::shortcuts::{
+    AppSettings, Command, ConflictError, KeyChord, ShortcutMap, TempPanController,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelHandle {
@@ -92,15 +88,16 @@ pub enum InputState {
 pub struct StonepenApp {
     canvas: HtmlCanvasElement,
     renderer: Renderer,
-    session: InkSession,
-    vp: Viewport,
+    pub session: InkSession,
+    pub vp: Viewport,
     input: InputState,
-    dpr: f64,
+    pub dpr: f64,
     preview_pts: Vec<InkPoint>,
     lasso_preview: Vec<Point2>,
     pub settings: AppSettings,
-    pub temp_pan: Option<TempPanState>,
+    pub temp_pan: TempPanController,
     pub capture_command: Option<Command>,
+    pub last_conflict: Option<Command>,
 }
 
 impl StonepenApp {
@@ -121,8 +118,15 @@ impl StonepenApp {
             if let Some(json_str) = storage.get_item("stonepen.settings.v1").ok().flatten() {
                 match serde_json::from_str::<AppSettings>(&json_str) {
                     Ok(mut loaded) => {
-                        loaded.validate_and_repair();
-                        settings = loaded;
+                        if AppSettings::is_version_supported(loaded.version) {
+                            loaded.validate_and_repair();
+                            settings = loaded;
+                        } else {
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "Unsupported settings version: {}, falling back to defaults",
+                                loaded.version
+                            )));
+                        }
                     }
                     Err(e) => {
                         web_sys::console::warn_1(&JsValue::from_str(&format!(
@@ -143,8 +147,9 @@ impl StonepenApp {
             preview_pts: Vec::new(),
             lasso_preview: Vec::new(),
             settings,
-            temp_pan: None,
+            temp_pan: TempPanController::new(),
             capture_command: None,
+            last_conflict: None,
         })
     }
 
@@ -587,11 +592,7 @@ impl StonepenApp {
                 }
             }
             InputState::Panning { .. } => {
-                if let Some(state) = &self.temp_pan {
-                    if state.released {
-                        self.temp_pan = None;
-                    }
-                }
+                self.temp_pan.handle_gesture_end();
                 self.refresh_cursor();
             }
             InputState::Idle => {}
@@ -634,11 +635,7 @@ impl StonepenApp {
                     self.session.doc.rebuild_runtime();
                 }
                 InputState::Panning { .. } => {
-                    if let Some(state) = &self.temp_pan {
-                        if state.released {
-                            self.temp_pan = None;
-                        }
-                    }
+                    self.temp_pan.handle_gesture_end();
                 }
                 _ => {}
             }
@@ -666,7 +663,6 @@ impl StonepenApp {
             e.prevent_default();
             if chord.code == "Escape" {
                 self.capture_command = None;
-                self.notify_js_shortcut_update();
                 return;
             }
             if chord.is_modifier_only() {
@@ -680,10 +676,9 @@ impl StonepenApp {
                 Ok(_) => {
                     self.capture_command = None;
                     self.save_settings();
-                    self.notify_js_shortcut_update();
                 }
                 Err(ConflictError::Conflict(other_cmd)) => {
-                    self.show_conflict_message(cmd_to_capture, other_cmd);
+                    self.last_conflict = Some(other_cmd);
                 }
                 Err(ConflictError::ModifierOnly) => {}
             }
@@ -696,11 +691,8 @@ impl StonepenApp {
                 return;
             }
             if cmd == Command::HoldPan {
-                if matches!(self.input, InputState::Idle) {
-                    self.temp_pan = Some(TempPanState {
-                        trigger_code: chord.code.clone(),
-                        released: false,
-                    });
+                let is_idle = matches!(self.input, InputState::Idle);
+                if self.temp_pan.handle_keydown(&chord.code, is_idle) {
                     self.refresh_cursor();
                     self.update_status();
                     self.redraw();
@@ -719,21 +711,43 @@ impl StonepenApp {
 
     pub fn on_key_up(&mut self, e: &KeyboardEvent) {
         let code = e.code();
-        if let Some(state) = &mut self.temp_pan {
-            if state.trigger_code == code {
-                state.released = true;
-                if !matches!(self.input, InputState::Panning { .. }) {
-                    self.temp_pan = None;
-                    self.refresh_cursor();
-                    self.update_status();
-                    self.redraw();
-                }
-            }
+        let is_dragging_pan = matches!(self.input, InputState::Panning { .. });
+        if self.temp_pan.handle_keyup(&code, is_dragging_pan) {
+            self.refresh_cursor();
+            self.update_status();
+            self.redraw();
         }
     }
 
     pub fn on_blur(&mut self) {
-        self.temp_pan = None;
+        self.reset_transient_input();
+    }
+
+    pub fn reset_transient_input(&mut self) {
+        let old_state = std::mem::replace(&mut self.input, InputState::Idle);
+        match old_state {
+            InputState::Erasing { erased, .. } => {
+                if !erased.is_empty() {
+                    let tx = InkTx::new("erase").push(InkOp::DeleteItems { items: erased });
+                    self.session.do_tx(tx);
+                }
+            }
+            InputState::MovingSel { before, .. }
+            | InputState::ScalingSel { before, .. }
+            | InputState::RotatingSel { before, .. } => {
+                for (id, start_xf) in before {
+                    if let Some(item) = self.session.doc.get_item_mut(id) {
+                        item.set_xform(start_xf);
+                    }
+                }
+                self.session.doc.rebuild_runtime();
+            }
+            _ => {}
+        }
+        self.preview_pts.clear();
+        self.lasso_preview.clear();
+        self.temp_pan.reset();
+        self.capture_command = None;
         self.refresh_cursor();
         self.update_status();
         self.redraw();
@@ -763,44 +777,22 @@ impl StonepenApp {
         }
     }
 
-    fn notify_js_shortcut_update(&self) {
+    pub fn get_platform_is_mac(&self) -> bool {
         if let Some(window) = web_sys::window() {
-            let event = web_sys::Event::new("shortcuts-updated").unwrap();
-            let _ = window.dispatch_event(&event);
+            let nav = window.navigator();
+            if let Ok(ua) = nav.user_agent() {
+                let lower = ua.to_lowercase();
+                return lower.contains("macintosh")
+                    || lower.contains("mac os x")
+                    || lower.contains("ipad")
+                    || lower.contains("iphone");
+            }
         }
-    }
-
-    fn show_conflict_message(&self, _cmd: Command, other: Command) {
-        if let Some(window) = web_sys::window() {
-            let msg = format!("Already used by {}", other.label());
-            let init = web_sys::CustomEventInit::new();
-            init.set_detail(&JsValue::from_str(&msg));
-            let custom_event = web_sys::CustomEvent::new_with_event_init_dict(
-                "shortcut-conflict",
-                &init,
-            )
-            .unwrap();
-            let _ = window.dispatch_event(&custom_event);
-        }
+        false
     }
 
     pub fn get_shortcuts_json(&self) -> String {
         let mut rows = Vec::new();
-        let commands = [
-            Command::ToolPen,
-            Command::ToolPencil,
-            Command::ToolHighlighter,
-            Command::ToolEraser,
-            Command::ToolLasso,
-            Command::ToolSelect,
-            Command::ToolPan,
-            Command::Undo,
-            Command::Redo,
-            Command::DeleteSelection,
-            Command::DuplicateSelection,
-            Command::ClearSelection,
-            Command::HoldPan,
-        ];
         #[derive(Serialize)]
         struct ShortcutRow {
             command_id: &'static str,
@@ -808,9 +800,10 @@ impl StonepenApp {
             bindings: Vec<String>,
             chords: Vec<KeyChord>,
         }
-        for cmd in &commands {
+        let is_mac = self.get_platform_is_mac();
+        for cmd in &Command::ALL {
             let chords = self.settings.shortcuts.bindings(*cmd);
-            let bindings_str = chords.iter().map(|c| c.to_display_string()).collect();
+            let bindings_str = chords.iter().map(|c| c.to_display_string(is_mac)).collect();
             rows.push(ShortcutRow {
                 command_id: cmd.to_id(),
                 label: cmd.label(),
@@ -824,13 +817,11 @@ impl StonepenApp {
     pub fn start_capture(&mut self, command_id: &str) {
         if let Some(cmd) = Command::from_id(command_id) {
             self.capture_command = Some(cmd);
-            self.notify_js_shortcut_update();
         }
     }
 
     pub fn cancel_capture(&mut self) {
         self.capture_command = None;
-        self.notify_js_shortcut_update();
     }
 
     pub fn is_capturing(&self) -> bool {
@@ -850,7 +841,6 @@ impl StonepenApp {
                 let chord = bindings[index].clone();
                 self.settings.shortcuts.remove_binding(cmd, &chord);
                 self.save_settings();
-                self.notify_js_shortcut_update();
             }
         }
     }
@@ -858,7 +848,6 @@ impl StonepenApp {
     pub fn reset_shortcuts_to_defaults(&mut self) {
         self.settings.shortcuts = ShortcutMap::defaults();
         self.save_settings();
-        self.notify_js_shortcut_update();
         self.redraw();
     }
 
@@ -903,14 +892,31 @@ impl StonepenApp {
     }
 
     pub fn action_load(&mut self, json: &str) {
+        let old_tool = self.session.active_tool.clone();
+        let old_brush = self.session.active_brush.clone();
         match InkSession::import_json(json) {
-            Ok(s) => {
+            Ok(mut s) => {
+                s.active_tool = old_tool;
+                s.active_brush = old_brush;
                 self.session = s;
-                self.update_status();
-                self.redraw();
+                self.reset_trans_state();
             }
             Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("{e}"))),
         }
+    }
+
+    fn reset_trans_state(&mut self) {
+        self.reset_transient_input();
+        let tool_name = match self.session.active_tool {
+            Tool::Pen => "pen",
+            Tool::Pencil => "pencil",
+            Tool::Highlighter => "highlighter",
+            Tool::StrokeEraser => "eraser",
+            Tool::Lasso => "lasso",
+            Tool::Select => "select",
+            Tool::Pan => "pan",
+        };
+        self.sync_tool_ui(tool_name);
     }
 
     pub fn action_export_svg(&self) {
@@ -954,7 +960,7 @@ impl StonepenApp {
     }
 
     pub fn effective_tool(&self) -> Tool {
-        if self.temp_pan.is_some() {
+        if self.temp_pan.is_active() {
             Tool::Pan
         } else {
             self.session.active_tool.clone()
@@ -962,7 +968,7 @@ impl StonepenApp {
     }
 
     pub fn refresh_cursor(&self) {
-        if self.temp_pan.is_some() {
+        if self.temp_pan.is_active() {
             if matches!(self.input, InputState::Panning { .. }) {
                 self.update_cursor("grabbing");
             } else {
@@ -974,6 +980,8 @@ impl StonepenApp {
             InputState::Idle => match self.effective_tool() {
                 Tool::Pan => self.update_cursor("grab"),
                 Tool::Select => self.update_cursor("default"),
+                Tool::StrokeEraser => self.update_cursor("cell"),
+                Tool::Lasso => self.update_cursor("crosshair"),
                 _ => self.update_cursor("default"),
             },
             InputState::Panning { .. } => {
