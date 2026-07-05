@@ -107,13 +107,13 @@ impl StonepenHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stonepen_core::brush::Brush;
-    use stonepen_core::point::PointerKind;
-    use stonepen_core::session::{Tool, InkSession};
-    use stonepen_core::stroke::InkStroke;
     use stonepen_core::bbox::BBox;
-    use stonepen_core::xform::Xform2D;
+    use stonepen_core::brush::Brush;
     use stonepen_core::ids::StrokeId;
+    use stonepen_core::point::PointerKind;
+    use stonepen_core::session::{InkSession, Tool};
+    use stonepen_core::stroke::InkStroke;
+    use stonepen_core::xform::Xform2D;
 
     #[test]
     fn test_handle_destroy_idempotent() {
@@ -140,20 +140,52 @@ mod tests {
     #[test]
     fn test_gesture_start_distinguishes_real_gesture() {
         use crate::app::StonepenApp;
-        assert!(StonepenApp::should_start_gesture(Tool::Pen, PointerKind::Pen, 0));
-        assert!(StonepenApp::should_start_gesture(Tool::Pen, PointerKind::Mouse, 1));
-        assert!(!StonepenApp::should_start_gesture(Tool::Pen, PointerKind::Mouse, 0));
-        assert!(!StonepenApp::should_start_gesture(Tool::Pen, PointerKind::Touch, 0));
+        assert!(StonepenApp::should_start_gesture(
+            Tool::Pen,
+            PointerKind::Pen,
+            0
+        ));
+        assert!(StonepenApp::should_start_gesture(
+            Tool::Pen,
+            PointerKind::Mouse,
+            1
+        ));
+        assert!(!StonepenApp::should_start_gesture(
+            Tool::Pen,
+            PointerKind::Mouse,
+            0
+        ));
+        assert!(!StonepenApp::should_start_gesture(
+            Tool::Pen,
+            PointerKind::Touch,
+            0
+        ));
 
-        assert!(StonepenApp::should_start_gesture(Tool::StrokeEraser, PointerKind::Touch, 0));
-        assert!(StonepenApp::should_start_gesture(Tool::Lasso, PointerKind::Touch, 0));
-        assert!(StonepenApp::should_start_gesture(Tool::Pan, PointerKind::Touch, 0));
-        assert!(StonepenApp::should_start_gesture(Tool::Select, PointerKind::Touch, 0));
+        assert!(StonepenApp::should_start_gesture(
+            Tool::StrokeEraser,
+            PointerKind::Touch,
+            0
+        ));
+        assert!(StonepenApp::should_start_gesture(
+            Tool::Lasso,
+            PointerKind::Touch,
+            0
+        ));
+        assert!(StonepenApp::should_start_gesture(
+            Tool::Pan,
+            PointerKind::Touch,
+            0
+        ));
+        assert!(StonepenApp::should_start_gesture(
+            Tool::Select,
+            PointerKind::Touch,
+            0
+        ));
     }
 
     #[test]
     fn test_pointer_interruption_cancels_active_gesture() {
-        use crate::app::{StonepenApp, InputState};
+        use crate::app::{InputState, StonepenApp};
         let drawing_state = InputState::Drawing {
             ptr_id: 42,
             builder: stonepen_core::stroke::StrokeBuilder::new(Brush::default_pen()),
@@ -171,6 +203,7 @@ mod tests {
         let mut session = InkSession::new(800.0, 600.0);
         let stroke = InkStroke {
             id: StrokeId::new(),
+            parent_id: None,
             brush: Brush::default_pen(),
             raw_pts: vec![],
             pts: vec![],

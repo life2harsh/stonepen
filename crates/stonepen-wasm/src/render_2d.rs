@@ -233,25 +233,29 @@ impl Renderer {
                                 let canvas_clone = self.ctx.canvas().unwrap();
                                 let url_clone = url.clone();
                                 let revoked_clone = Rc::clone(&revoked);
-                                let onload = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                                    if !revoked_clone.get() {
-                                        revoked_clone.set(true);
-                                        let _ = web_sys::Url::revoke_object_url(&url_clone);
-                                    }
-                                    let _ = canvas_clone.dispatch_event(
-                                        &web_sys::Event::new("redraw").unwrap(),
-                                    );
-                                }) as Box<dyn FnMut()>);
+                                let onload =
+                                    wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                                        if !revoked_clone.get() {
+                                            revoked_clone.set(true);
+                                            let _ = web_sys::Url::revoke_object_url(&url_clone);
+                                        }
+                                        let _ = canvas_clone.dispatch_event(
+                                            &web_sys::Event::new("redraw").unwrap(),
+                                        );
+                                    })
+                                        as Box<dyn FnMut()>);
                                 html_img.set_onload(Some(onload.as_ref().unchecked_ref()));
 
                                 let url_clone2 = url.clone();
                                 let revoked_clone2 = Rc::clone(&revoked);
-                                let onerror = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                                    if !revoked_clone2.get() {
-                                        revoked_clone2.set(true);
-                                        let _ = web_sys::Url::revoke_object_url(&url_clone2);
-                                    }
-                                }) as Box<dyn FnMut()>);
+                                let onerror =
+                                    wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                                        if !revoked_clone2.get() {
+                                            revoked_clone2.set(true);
+                                            let _ = web_sys::Url::revoke_object_url(&url_clone2);
+                                        }
+                                    })
+                                        as Box<dyn FnMut()>);
                                 html_img.set_onerror(Some(onerror.as_ref().unchecked_ref()));
 
                                 html_img.set_src(&url);

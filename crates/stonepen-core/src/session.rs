@@ -461,7 +461,6 @@ impl InkSession {
         all_pasted_ids
     }
 
-
     pub fn is_z_order_enabled(&self, cmd: ZOrderCmd) -> bool {
         let sel = &self.doc.runtime.sel_items;
         if sel.is_empty() {

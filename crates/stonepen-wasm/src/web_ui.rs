@@ -436,7 +436,8 @@ impl WebUi {
             }
         }
 
-        let sel_strokes: Vec<&stonepen_core::stroke::InkStroke> = sel.iter()
+        let sel_strokes: Vec<&stonepen_core::stroke::InkStroke> = sel
+            .iter()
             .filter_map(|&id| app.session.doc.get_stroke(id))
             .collect();
 
@@ -471,7 +472,11 @@ impl WebUi {
                     }
                 }
 
-                let first_rgb = (sel_strokes[0].brush.color.r, sel_strokes[0].brush.color.g, sel_strokes[0].brush.color.b);
+                let first_rgb = (
+                    sel_strokes[0].brush.color.r,
+                    sel_strokes[0].brush.color.g,
+                    sel_strokes[0].brush.color.b,
+                );
                 let mut mixed_rgb = false;
                 for s in &sel_strokes[1..] {
                     let rgb = (s.brush.color.r, s.brush.color.g, s.brush.color.b);

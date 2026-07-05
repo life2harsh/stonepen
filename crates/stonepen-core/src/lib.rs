@@ -3542,8 +3542,14 @@ mod tests {
         assert_eq!(session.doc.get_stroke(id2).unwrap().brush.color.r, 255);
 
         session.undo();
-        assert_eq!(session.doc.get_stroke(id1).unwrap().brush.base_w, brush1.base_w);
-        assert_eq!(session.doc.get_stroke(id2).unwrap().brush.color.r, brush2.color.r);
+        assert_eq!(
+            session.doc.get_stroke(id1).unwrap().brush.base_w,
+            brush1.base_w
+        );
+        assert_eq!(
+            session.doc.get_stroke(id2).unwrap().brush.color.r,
+            brush2.color.r
+        );
 
         session.redo();
         assert_eq!(session.doc.get_stroke(id1).unwrap().brush.base_w, 12.5);
@@ -3553,7 +3559,7 @@ mod tests {
     #[test]
     fn test_editing_51_single_selected_image_root() {
         let mut doc = InkDoc::new(800.0, 600.0);
-        
+
         let img_id1 = ItemId::new();
         let img1 = InkItem::Image(InkImage {
             id: img_id1,
@@ -3569,7 +3575,7 @@ mod tests {
             geom_rev: 0,
         });
         doc.add_item(doc.active_layer_id, img1);
-        
+
         let stroke_id1 = StrokeId::new();
         let stroke1 = InkItem::Stroke(InkStroke {
             id: stroke_id1,

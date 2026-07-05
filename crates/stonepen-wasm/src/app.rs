@@ -111,11 +111,12 @@ pub struct StylePreviewState {
 }
 
 pub struct StonepenApp {
+    pub canvas_id: String,
     canvas: HtmlCanvasElement,
     renderer: Renderer,
     pub session: InkSession,
     pub vp: Viewport,
-    input: InputState,
+    pub input: InputState,
     pub dpr: f64,
     preview_pts: Vec<InkPoint>,
     lasso_preview: Vec<Point2>,
@@ -168,6 +169,7 @@ impl StonepenApp {
             }
         }
         Ok(Self {
+            canvas_id: canvas_id.to_string(),
             canvas,
             renderer,
             session,
@@ -188,15 +190,17 @@ impl StonepenApp {
         })
     }
 
-    pub fn should_start_gesture(tool: Tool, pointer_kind: stonepen_core::point::PointerKind, buttons: u16) -> bool {
+    pub fn should_start_gesture(
+        tool: Tool,
+        pointer_kind: stonepen_core::point::PointerKind,
+        buttons: u16,
+    ) -> bool {
         match tool {
-            Tool::Pen | Tool::Pencil | Tool::Highlighter => {
-                match pointer_kind {
-                    stonepen_core::point::PointerKind::Pen => true,
-                    stonepen_core::point::PointerKind::Mouse => buttons & 1 != 0,
-                    _ => false,
-                }
-            }
+            Tool::Pen | Tool::Pencil | Tool::Highlighter => match pointer_kind {
+                stonepen_core::point::PointerKind::Pen => true,
+                stonepen_core::point::PointerKind::Mouse => buttons & 1 != 0,
+                _ => false,
+            },
             Tool::StrokeEraser | Tool::Lasso | Tool::Pan | Tool::Select => true,
         }
     }
@@ -898,7 +902,7 @@ impl StonepenApp {
             let has_transient = !matches!(self.input, InputState::Idle);
             if has_preview {
                 self.cancel_style_preview();
-                if let Ok(ui) = WebUi::new() {
+                if let Ok(ui) = WebUi::new(&self.canvas_id) {
                     ui.focus_canvas();
                 }
                 e.prevent_default();
@@ -906,7 +910,7 @@ impl StonepenApp {
             }
             if has_transient {
                 self.reset_transient_input();
-                if let Ok(ui) = WebUi::new() {
+                if let Ok(ui) = WebUi::new(&self.canvas_id) {
                     ui.focus_canvas();
                 }
                 e.prevent_default();
@@ -1282,7 +1286,7 @@ impl StonepenApp {
                 self.sync_tool_ui(tool_name);
                 self.sync_brush_controls();
 
-                if let Ok(ui) = WebUi::new() {
+                if let Ok(ui) = WebUi::new(&self.canvas_id) {
                     ui.sync_capture_overlay(self);
                 }
 
@@ -1308,13 +1312,13 @@ impl StonepenApp {
         };
         self.sync_tool_ui(tool_name);
         self.sync_brush_controls();
-        if let Ok(ui) = WebUi::new() {
+        if let Ok(ui) = WebUi::new(&self.canvas_id) {
             ui.sync_capture_overlay(self);
         }
     }
 
     pub fn sync_brush_controls(&self) {
-        if let Ok(ui) = WebUi::new() {
+        if let Ok(ui) = WebUi::new(&self.canvas_id) {
             ui.sync_brush_controls(&self.session.active_brush);
         }
     }
@@ -1604,10 +1608,7 @@ impl StonepenApp {
             if let Some(InkItem::Image(img)) = self.session.doc.get_item(img_id) {
                 let w = img.width;
                 let h = img.height;
-                let corners = [
-                    Point2::new(0.0, 0.0),
-                    Point2::new(w, 0.0),
-                ];
+                let corners = [Point2::new(0.0, 0.0), Point2::new(w, 0.0)];
                 let sc: Vec<Point2> = corners
                     .iter()
                     .map(|&p| self.vp.world_to_screen(img.xform.apply(p)))
@@ -1869,10 +1870,10 @@ impl StonepenApp {
                 let w = img.width;
                 let h = img.height;
                 let corners = [
-                    Point2::new(0.0, 0.0),      // TopLeft
-                    Point2::new(w, 0.0),        // TopRight
-                    Point2::new(w, h),          // BottomRight
-                    Point2::new(0.0, h),        // BottomLeft
+                    Point2::new(0.0, 0.0), // TopLeft
+                    Point2::new(w, 0.0),   // TopRight
+                    Point2::new(w, h),     // BottomRight
+                    Point2::new(0.0, h),   // BottomLeft
                 ];
                 let sc: Vec<Point2> = corners
                     .iter()
@@ -1884,10 +1885,22 @@ impl StonepenApp {
                     (SelHandle::TopRight, sc[1]),
                     (SelHandle::BottomRight, sc[2]),
                     (SelHandle::BottomLeft, sc[3]),
-                    (SelHandle::Top, Point2::new((sc[0].x + sc[1].x) * 0.5, (sc[0].y + sc[1].y) * 0.5)),
-                    (SelHandle::Right, Point2::new((sc[1].x + sc[2].x) * 0.5, (sc[1].y + sc[2].y) * 0.5)),
-                    (SelHandle::Bottom, Point2::new((sc[2].x + sc[3].x) * 0.5, (sc[2].y + sc[3].y) * 0.5)),
-                    (SelHandle::Left, Point2::new((sc[3].x + sc[0].x) * 0.5, (sc[3].y + sc[0].y) * 0.5)),
+                    (
+                        SelHandle::Top,
+                        Point2::new((sc[0].x + sc[1].x) * 0.5, (sc[0].y + sc[1].y) * 0.5),
+                    ),
+                    (
+                        SelHandle::Right,
+                        Point2::new((sc[1].x + sc[2].x) * 0.5, (sc[1].y + sc[2].y) * 0.5),
+                    ),
+                    (
+                        SelHandle::Bottom,
+                        Point2::new((sc[2].x + sc[3].x) * 0.5, (sc[2].y + sc[3].y) * 0.5),
+                    ),
+                    (
+                        SelHandle::Left,
+                        Point2::new((sc[3].x + sc[0].x) * 0.5, (sc[3].y + sc[0].y) * 0.5),
+                    ),
                 ]);
             }
         }
@@ -2001,7 +2014,7 @@ impl StonepenApp {
         self.session.doc.rebuild_runtime();
         self.redraw();
 
-        if let Ok(ui) = WebUi::new() {
+        if let Ok(ui) = WebUi::new(&self.canvas_id) {
             if let Some(el) = ui.get_element("sel-width-mixed") {
                 let _ = el.class_list().add_1("hidden");
             }
@@ -2026,7 +2039,7 @@ impl StonepenApp {
         self.session.doc.rebuild_runtime();
         self.redraw();
 
-        if let Ok(ui) = WebUi::new() {
+        if let Ok(ui) = WebUi::new(&self.canvas_id) {
             if let Some(el) = ui.get_element("sel-color-mixed") {
                 let _ = el.class_list().add_1("hidden");
             }
@@ -2035,15 +2048,21 @@ impl StonepenApp {
 
     pub fn ensure_style_preview(&mut self) {
         if self.style_preview.is_none() {
-            let sel_strokes: Vec<ItemId> = self.session.doc.runtime.sel_items.iter()
+            let sel_strokes: Vec<ItemId> = self
+                .session
+                .doc
+                .runtime
+                .sel_items
+                .iter()
                 .filter(|&&id| self.session.doc.get_stroke(id).is_some())
                 .cloned()
                 .collect();
-            
-            let original_brushes: Vec<Brush> = sel_strokes.iter()
+
+            let original_brushes: Vec<Brush> = sel_strokes
+                .iter()
                 .map(|&id| self.session.doc.get_stroke(id).unwrap().brush.clone())
                 .collect();
-                
+
             self.style_preview = Some(StylePreviewState {
                 stroke_ids: sel_strokes,
                 original_brushes,
@@ -2065,7 +2084,7 @@ impl StonepenApp {
                     current_brushes.push(preview.original_brushes[i].clone());
                 }
             }
-            
+
             if changed && !preview.stroke_ids.is_empty() {
                 let tx = InkTx::new("change selection style").push(InkOp::SetStrokeBrushes {
                     stroke_ids: preview.stroke_ids,
@@ -2097,7 +2116,7 @@ impl StonepenApp {
     }
 
     pub fn sync_selection_bar(&self) {
-        if let Ok(ui) = WebUi::new() {
+        if let Ok(ui) = WebUi::new(&self.canvas_id) {
             ui.sync_selection_bar(self);
         }
     }

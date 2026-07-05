@@ -14,11 +14,11 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::{
-    AddEventListenerOptions, ClipboardEvent, Element, Event, FileReader, HtmlInputElement,
-    KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent, HtmlCanvasElement,
+    AddEventListenerOptions, ClipboardEvent, Element, Event, FileReader, HtmlCanvasElement,
+    HtmlInputElement, KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent,
 };
 
-use crate::app::{StonepenApp, InputState};
+use crate::app::{InputState, StonepenApp};
 use crate::web_ui::WebUi;
 use stonepen_core::session::Tool;
 use stonepen_core::shortcuts::Command;
@@ -34,18 +34,9 @@ struct Listener {
 
 impl Listener {
     fn remove(&self) {
-        if let Some(ref opts) = self.options {
-            let _ = self.target.remove_event_listener_with_callback_and_event_listener_options(
-                &self.event_type,
-                &self.callback,
-                opts,
-            );
-        } else {
-            let _ = self.target.remove_event_listener_with_callback(
-                &self.event_type,
-                &self.callback,
-            );
-        }
+        let _ = self
+            .target
+            .remove_event_listener_with_callback(&self.event_type, &self.callback);
     }
 }
 
@@ -58,6 +49,101 @@ pub struct WebRuntime {
 }
 
 impl WebRuntime {
+    fn reg_pointer(
+        listeners: &mut Vec<Listener>,
+        target: web_sys::EventTarget,
+        event_type: &str,
+        closure: Closure<dyn FnMut(PointerEvent)>,
+    ) -> Result<(), JsValue> {
+        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        target.add_event_listener_with_callback(event_type, &callback)?;
+        listeners.push(Listener {
+            target,
+            event_type: event_type.to_string(),
+            callback,
+            options: None,
+            _closure: Box::new(closure),
+        });
+        Ok(())
+    }
+
+    fn reg_keyboard(
+        listeners: &mut Vec<Listener>,
+        target: web_sys::EventTarget,
+        event_type: &str,
+        closure: Closure<dyn FnMut(KeyboardEvent)>,
+    ) -> Result<(), JsValue> {
+        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        target.add_event_listener_with_callback(event_type, &callback)?;
+        listeners.push(Listener {
+            target,
+            event_type: event_type.to_string(),
+            callback,
+            options: None,
+            _closure: Box::new(closure),
+        });
+        Ok(())
+    }
+
+    fn reg_wheel(
+        listeners: &mut Vec<Listener>,
+        target: web_sys::EventTarget,
+        event_type: &str,
+        closure: Closure<dyn FnMut(WheelEvent)>,
+        options: web_sys::AddEventListenerOptions,
+    ) -> Result<(), JsValue> {
+        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        target.add_event_listener_with_callback_and_add_event_listener_options(
+            event_type,
+            &callback,
+            &options,
+        )?;
+        listeners.push(Listener {
+            target,
+            event_type: event_type.to_string(),
+            callback,
+            options: Some(options),
+            _closure: Box::new(closure),
+        });
+        Ok(())
+    }
+
+    fn reg_clipboard(
+        listeners: &mut Vec<Listener>,
+        target: web_sys::EventTarget,
+        event_type: &str,
+        closure: Closure<dyn FnMut(ClipboardEvent)>,
+    ) -> Result<(), JsValue> {
+        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        target.add_event_listener_with_callback(event_type, &callback)?;
+        listeners.push(Listener {
+            target,
+            event_type: event_type.to_string(),
+            callback,
+            options: None,
+            _closure: Box::new(closure),
+        });
+        Ok(())
+    }
+
+    fn reg_generic(
+        listeners: &mut Vec<Listener>,
+        target: web_sys::EventTarget,
+        event_type: &str,
+        closure: Closure<dyn FnMut(Event)>,
+    ) -> Result<(), JsValue> {
+        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        target.add_event_listener_with_callback(event_type, &callback)?;
+        listeners.push(Listener {
+            target,
+            event_type: event_type.to_string(),
+            callback,
+            options: None,
+            _closure: Box::new(closure),
+        });
+        Ok(())
+    }
+
     pub fn new(canvas_id: &str) -> Result<Self, JsValue> {
         let app = Rc::new(RefCell::new(StonepenApp::new(canvas_id)?));
         let ui = Rc::new(WebUi::new(canvas_id)?);
@@ -80,92 +166,6 @@ impl WebRuntime {
 
         let mut listeners = Vec::new();
 
-        // Helper to register listener and keep it alive
-        let mut reg_pointer = |target: web_sys::EventTarget,
-                               event_type: &str,
-                               closure: Closure<dyn FnMut(PointerEvent)>|
-         -> Result<(), JsValue> {
-            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
-            target.add_event_listener_with_callback(event_type, &callback)?;
-            listeners.push(Listener {
-                target,
-                event_type: event_type.to_string(),
-                callback,
-                options: None,
-                _closure: Box::new(closure),
-            });
-            Ok(())
-        };
-
-        let mut reg_keyboard = |target: web_sys::EventTarget,
-                                event_type: &str,
-                                closure: Closure<dyn FnMut(KeyboardEvent)>|
-         -> Result<(), JsValue> {
-            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
-            target.add_event_listener_with_callback(event_type, &callback)?;
-            listeners.push(Listener {
-                target,
-                event_type: event_type.to_string(),
-                callback,
-                options: None,
-                _closure: Box::new(closure),
-            });
-            Ok(())
-        };
-
-        let mut reg_wheel = |target: web_sys::EventTarget,
-                             event_type: &str,
-                             closure: Closure<dyn FnMut(WheelEvent)>,
-                             options: web_sys::AddEventListenerOptions|
-         -> Result<(), JsValue> {
-            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
-            target.add_event_listener_with_callback_and_add_event_listener_options(
-                event_type,
-                &callback,
-                &options,
-            )?;
-            listeners.push(Listener {
-                target,
-                event_type: event_type.to_string(),
-                callback,
-                options: Some(options),
-                _closure: Box::new(closure),
-            });
-            Ok(())
-        };
-
-        let mut reg_clipboard = |target: web_sys::EventTarget,
-                                 event_type: &str,
-                                 closure: Closure<dyn FnMut(ClipboardEvent)>|
-         -> Result<(), JsValue> {
-            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
-            target.add_event_listener_with_callback(event_type, &callback)?;
-            listeners.push(Listener {
-                target,
-                event_type: event_type.to_string(),
-                callback,
-                options: None,
-                _closure: Box::new(closure),
-            });
-            Ok(())
-        };
-
-        let mut reg_generic = |target: web_sys::EventTarget,
-                               event_type: &str,
-                               closure: Closure<dyn FnMut(Event)>|
-         -> Result<(), JsValue> {
-            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
-            target.add_event_listener_with_callback(event_type, &callback)?;
-            listeners.push(Listener {
-                target,
-                event_type: event_type.to_string(),
-                callback,
-                options: None,
-                _closure: Box::new(closure),
-            });
-            Ok(())
-        };
-
         // -----------------------------------------------------------------------
         // Pointer events
         // -----------------------------------------------------------------------
@@ -186,7 +186,7 @@ impl WebRuntime {
                 }
             })
         };
-        reg_pointer(canvas_et.clone(), "pointerdown", on_pointer_down)?;
+        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointerdown", on_pointer_down)?;
 
         let on_pointer_move = {
             let app = Rc::clone(&app);
@@ -195,7 +195,7 @@ impl WebRuntime {
                 app.borrow_mut().on_pointer_move(&e);
             })
         };
-        reg_pointer(canvas_et.clone(), "pointermove", on_pointer_move)?;
+        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointermove", on_pointer_move)?;
 
         let on_pointer_up = {
             let app = Rc::clone(&app);
@@ -206,7 +206,7 @@ impl WebRuntime {
                 let _ = canvas_html.release_pointer_capture(e.pointer_id());
             })
         };
-        reg_pointer(canvas_et.clone(), "pointerup", on_pointer_up)?;
+        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointerup", on_pointer_up)?;
 
         let on_pointer_cancel = {
             let app = Rc::clone(&app);
@@ -216,7 +216,7 @@ impl WebRuntime {
                 let _ = canvas_html.release_pointer_capture(e.pointer_id());
             })
         };
-        reg_pointer(canvas_et.clone(), "pointercancel", on_pointer_cancel)?;
+        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointercancel", on_pointer_cancel)?;
 
         let on_lost_pointer_capture = {
             let app = Rc::clone(&app);
@@ -224,25 +224,30 @@ impl WebRuntime {
                 let active_ptr_id = {
                     let a = app.borrow();
                     match &a.input {
-                        InputState::Drawing { ptr_id, .. } => Some(*ptr_id),
-                        InputState::Lassoing { ptr_id, .. } => Some(*ptr_id),
-                        InputState::Erasing { ptr_id, .. } => Some(*ptr_id),
-                        InputState::Panning { ptr_id, .. } => Some(*ptr_id),
-                        InputState::MovingSel { ptr_id, .. } => Some(*ptr_id),
-                        InputState::ScalingSel { ptr_id, .. } => Some(*ptr_id),
-                        InputState::RotatingSel { ptr_id, .. } => Some(*ptr_id),
-                        InputState::MarqueeSelecting { ptr_id, .. } => Some(*ptr_id),
+                        InputState::Drawing { ptr_id, .. } => Some(ptr_id),
+                        InputState::Lassoing { ptr_id, .. } => Some(ptr_id),
+                        InputState::Erasing { ptr_id, .. } => Some(ptr_id),
+                        InputState::Panning { ptr_id, .. } => Some(ptr_id),
+                        InputState::MovingSel { ptr_id, .. } => Some(ptr_id),
+                        InputState::ScalingSel { ptr_id, .. } => Some(ptr_id),
+                        InputState::RotatingSel { ptr_id, .. } => Some(ptr_id),
+                        InputState::MarqueeSelecting { ptr_id, .. } => Some(ptr_id),
                         InputState::Idle => None,
                     }
                 };
                 if let Some(pid) = active_ptr_id {
-                    if pid == e.pointer_id() {
+                    if *pid == e.pointer_id() {
                         app.borrow_mut().on_pointer_cancel(&e);
                     }
                 }
             })
         };
-        reg_pointer(canvas_et.clone(), "lostpointercapture", on_lost_pointer_capture)?;
+        Self::reg_pointer(
+            &mut listeners,
+            canvas_et.clone(),
+            "lostpointercapture",
+            on_lost_pointer_capture,
+        )?;
 
         // -----------------------------------------------------------------------
         // Keyboard events
@@ -297,7 +302,7 @@ impl WebRuntime {
                 app.borrow_mut().on_key_down(&e);
             })
         };
-        reg_keyboard(window.clone().into(), "keydown", on_keydown)?;
+        Self::reg_keyboard(&mut listeners, window.clone().into(), "keydown", on_keydown)?;
 
         let on_keyup = {
             let app = Rc::clone(&app);
@@ -305,7 +310,7 @@ impl WebRuntime {
                 app.borrow_mut().on_key_up(&e);
             })
         };
-        reg_keyboard(window.clone().into(), "keyup", on_keyup)?;
+        Self::reg_keyboard(&mut listeners, window.clone().into(), "keyup", on_keyup)?;
 
         let on_blur = {
             let app = Rc::clone(&app);
@@ -315,7 +320,7 @@ impl WebRuntime {
                 ui.sync_capture_overlay(&app.borrow());
             })
         };
-        reg_generic(window.clone().into(), "blur", on_blur)?;
+        Self::reg_generic(&mut listeners, window.clone().into(), "blur", on_blur)?;
 
         let on_visibility = {
             let app = Rc::clone(&app);
@@ -329,7 +334,7 @@ impl WebRuntime {
                 }
             })
         };
-        reg_generic(document.clone().into(), "visibilitychange", on_visibility)?;
+        Self::reg_generic(&mut listeners, document.clone().into(), "visibilitychange", on_visibility)?;
 
         // -----------------------------------------------------------------------
         // Toolbar: tool buttons
@@ -353,7 +358,7 @@ impl WebRuntime {
             let btn_id = format!("btn-{}", tool_name);
             if let Some(el) = document.get_element_by_id(&btn_id) {
                 let target = el.dyn_into::<web_sys::EventTarget>()?;
-                reg_generic(target, "click", cb)?;
+                Self::reg_generic(&mut listeners, target, "click", cb)?;
             }
         }
 
@@ -361,14 +366,14 @@ impl WebRuntime {
         // Action buttons
         // -----------------------------------------------------------------------
 
-        let mut reg_simple_btn = |id: &str, action: Rc<dyn Fn() + 'static>| -> Result<(), JsValue> {
+        let mut reg_simple_btn = |id: &str, action: Rc<dyn Fn() + 'static>, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
             if let Some(el) = document.get_element_by_id(id) {
                 let target = el.dyn_into::<web_sys::EventTarget>()?;
                 let act = Rc::clone(&action);
                 let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                     act();
                 });
-                reg_generic(target, "click", cb)?;
+                Self::reg_generic(listeners_ref, target, "click", cb)?;
             }
             Ok(())
         };
@@ -376,32 +381,32 @@ impl WebRuntime {
         reg_simple_btn("btn-undo", Rc::new({
             let app = Rc::clone(&app);
             move || app.borrow_mut().action_undo()
-        }))?;
+        }), &mut listeners)?;
 
         reg_simple_btn("btn-redo", Rc::new({
             let app = Rc::clone(&app);
             move || app.borrow_mut().action_redo()
-        }))?;
+        }), &mut listeners)?;
 
         reg_simple_btn("btn-clear", Rc::new({
             let app = Rc::clone(&app);
             move || app.borrow_mut().action_clear()
-        }))?;
+        }), &mut listeners)?;
 
         reg_simple_btn("btn-save", Rc::new({
             let app = Rc::clone(&app);
             move || app.borrow_mut().action_save()
-        }))?;
+        }), &mut listeners)?;
 
         reg_simple_btn("btn-export-svg", Rc::new({
             let app = Rc::clone(&app);
             move || app.borrow_mut().action_export_svg()
-        }))?;
+        }), &mut listeners)?;
 
         reg_simple_btn("btn-export-png", Rc::new({
             let app = Rc::clone(&app);
             move || app.borrow_mut().action_export_png()
-        }))?;
+        }), &mut listeners)?;
 
         // -----------------------------------------------------------------------
         // Settings button
@@ -417,7 +422,7 @@ impl WebRuntime {
                 drop(a);
                 ui.open_settings();
             });
-            reg_generic(target, "click", cb)?;
+            Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
         let close_settings_rc: Rc<dyn Fn() + 'static> = Rc::new({
@@ -436,7 +441,7 @@ impl WebRuntime {
             let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                 f();
             });
-            reg_generic(target, "click", cb)?;
+            Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
         if let Some(el) = document.get_element_by_id("btn-settings-close-footer") {
@@ -445,7 +450,7 @@ impl WebRuntime {
             let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                 f();
             });
-            reg_generic(target, "click", cb)?;
+            Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
         if let Some(el) = document.get_element_by_id("btn-settings-reset") {
@@ -467,7 +472,7 @@ impl WebRuntime {
                     ui.render_shortcuts(&a);
                 }
             });
-            reg_generic(target, "click", cb)?;
+            Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
         // -----------------------------------------------------------------------
@@ -508,7 +513,7 @@ impl WebRuntime {
                     }
                 }
             });
-            reg_generic(target, "click", cb)?;
+            Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
         // -----------------------------------------------------------------------
@@ -521,7 +526,7 @@ impl WebRuntime {
             let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                 ui.trigger_load_input_click();
             });
-            reg_generic(target, "click", cb)?;
+            Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
         // -----------------------------------------------------------------------
@@ -575,7 +580,7 @@ impl WebRuntime {
                 reader.set_onload(Some(&onload));
                 let _ = reader.read_as_text(&file);
             });
-            reg_generic(target, "change", cb)?;
+            Self::reg_generic(&mut listeners, target, "change", cb)?;
         }
 
         // -----------------------------------------------------------------------
@@ -597,7 +602,7 @@ impl WebRuntime {
                     app.borrow_mut().set_brush_width(w);
                 }
             });
-            reg_generic(target, "input", cb)?;
+            Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
 
         if let Some(el) = document.get_element_by_id("color-picker") {
@@ -622,7 +627,7 @@ impl WebRuntime {
                     }
                 }
             });
-            reg_generic(target, "input", cb)?;
+            Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
 
         // -----------------------------------------------------------------------
@@ -768,7 +773,7 @@ impl WebRuntime {
                 }
             })
         };
-        reg_clipboard(window.clone().into(), "paste", on_paste)?;
+        Self::reg_clipboard(&mut listeners, window.clone().into(), "paste", on_paste)?;
 
         // -----------------------------------------------------------------------
         // Selection bar
@@ -792,7 +797,7 @@ impl WebRuntime {
             });
             if let Some(el) = document.get_element_by_id(id) {
                 let target = el.dyn_into::<web_sys::EventTarget>()?;
-                reg_generic(target, "click", cb)?;
+                Self::reg_generic(&mut listeners, target, "click", cb)?;
             }
         }
 
@@ -806,7 +811,7 @@ impl WebRuntime {
                     }
                 }
             });
-            reg_generic(target, "input", cb)?;
+            Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
 
         let reg_sel_width_commit = |el: Element, app: Rc<RefCell<StonepenApp>>, event_type: &str, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
@@ -852,7 +857,7 @@ impl WebRuntime {
                     }
                 }
             });
-            reg_generic(target, "input", cb)?;
+            Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
 
         let reg_sel_color_commit = |el: Element, app: Rc<RefCell<StonepenApp>>, event_type: &str, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
@@ -894,7 +899,7 @@ impl WebRuntime {
         };
         let opts = AddEventListenerOptions::new();
         opts.set_passive(false);
-        reg_wheel(canvas_et.clone(), "wheel", on_wheel, opts)?;
+        Self::reg_wheel(&mut listeners, canvas_et.clone(), "wheel", on_wheel, opts)?;
 
         // -----------------------------------------------------------------------
         // ResizeObserver
