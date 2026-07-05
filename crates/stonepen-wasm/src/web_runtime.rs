@@ -6,7 +6,7 @@
 /// - All registered event closures (must remain alive)
 /// - The ResizeObserver handle
 ///
-/// Created by `start_stonepen`. Intentionally leaked for page lifetime.
+/// Created by `mount_stonepen`. Owned by `StonepenHandle`.
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -15,65 +15,52 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::{
     AddEventListenerOptions, ClipboardEvent, Element, Event, FileReader, HtmlInputElement,
-    KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent,
+    KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent, HtmlCanvasElement,
 };
 
-use crate::app::StonepenApp;
+use crate::app::{StonepenApp, InputState};
 use crate::web_ui::WebUi;
 use stonepen_core::session::Tool;
 use stonepen_core::shortcuts::Command;
 
-/// Shared handle to the application. All event closures hold a clone.
-type AppHandle = Rc<RefCell<StonepenApp>>;
+struct Listener {
+    target: web_sys::EventTarget,
+    event_type: String,
+    callback: js_sys::Function,
+    options: Option<web_sys::AddEventListenerOptions>,
+    // Drop of _closure will automatically clean up/free the Wasm Closure.
+    _closure: Box<dyn std::any::Any>,
+}
 
-/// All the closures that must survive for the lifetime of the page.
-/// The closures are stored here so they are never dropped.
-#[allow(dead_code)]
+impl Listener {
+    fn remove(&self) {
+        if let Some(ref opts) = self.options {
+            let _ = self.target.remove_event_listener_with_callback_and_event_listener_options(
+                &self.event_type,
+                &self.callback,
+                opts,
+            );
+        } else {
+            let _ = self.target.remove_event_listener_with_callback(
+                &self.event_type,
+                &self.callback,
+            );
+        }
+    }
+}
+
 pub struct WebRuntime {
-    // Pointer events on canvas
-    _on_pointer_down: Closure<dyn FnMut(PointerEvent)>,
-    _on_pointer_move: Closure<dyn FnMut(PointerEvent)>,
-    _on_pointer_up: Closure<dyn FnMut(PointerEvent)>,
-    _on_pointer_cancel: Closure<dyn FnMut(PointerEvent)>,
-    _on_wheel: Closure<dyn FnMut(WheelEvent)>,
-    // Keyboard / window events
-    _on_keydown: Closure<dyn FnMut(KeyboardEvent)>,
-    _on_keyup: Closure<dyn FnMut(KeyboardEvent)>,
-    _on_blur: Closure<dyn FnMut(Event)>,
-    _on_visibility: Closure<dyn FnMut(Event)>,
-    // Toolbar / action buttons
-    _tool_btns: Vec<Closure<dyn FnMut(Event)>>,
-    _btn_undo: Closure<dyn FnMut(Event)>,
-    _btn_redo: Closure<dyn FnMut(Event)>,
-    _btn_clear: Closure<dyn FnMut(Event)>,
-    _btn_save: Closure<dyn FnMut(Event)>,
-    _btn_load: Closure<dyn FnMut(Event)>,
-    _btn_export_svg: Closure<dyn FnMut(Event)>,
-    _btn_export_png: Closure<dyn FnMut(Event)>,
-    _btn_settings: Closure<dyn FnMut(Event)>,
-    _btn_settings_close: Closure<dyn FnMut(Event)>,
-    _btn_settings_close_footer: Closure<dyn FnMut(Event)>,
-    _btn_settings_reset: Closure<dyn FnMut(Event)>,
-    // Brush controls
-    _width_slider: Closure<dyn FnMut(Event)>,
-    _color_picker: Closure<dyn FnMut(Event)>,
-    // File load input
-    _load_input_change: Closure<dyn FnMut(Event)>,
-    // Paste
-    _on_paste: Closure<dyn FnMut(ClipboardEvent)>,
-    // Resize observer
-    _resize_observer: ResizeObserver,
-    _resize_cb: Closure<dyn FnMut(js_sys::Array)>,
-    // Shortcut table event delegation
-    _shortcuts_table_click: Closure<dyn FnMut(Event)>,
-    // Selection bar event handlers
-    _selection_bar_handlers: Vec<Closure<dyn FnMut(Event)>>,
+    pub app: Rc<RefCell<StonepenApp>>,
+    pub ui: Rc<WebUi>,
+    listeners: Vec<Listener>,
+    resize_observer: Option<ResizeObserver>,
+    _resize_cb: Option<Closure<dyn FnMut(js_sys::Array)>>,
 }
 
 impl WebRuntime {
     pub fn new(canvas_id: &str) -> Result<Self, JsValue> {
         let app = Rc::new(RefCell::new(StonepenApp::new(canvas_id)?));
-        let ui = Rc::new(WebUi::new()?);
+        let ui = Rc::new(WebUi::new(canvas_id)?);
 
         let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
         let document = window
@@ -83,9 +70,101 @@ impl WebRuntime {
         let canvas = document
             .get_element_by_id(canvas_id)
             .ok_or_else(|| JsValue::from_str("canvas not found"))?;
+        let canvas_html = canvas
+            .clone()
+            .dyn_into::<HtmlCanvasElement>()
+            .map_err(|_| JsValue::from_str("element not HtmlCanvasElement"))?;
         let canvas_et: web_sys::EventTarget = canvas
             .dyn_into::<web_sys::EventTarget>()
             .map_err(|_| JsValue::from_str("canvas not event target"))?;
+
+        let mut listeners = Vec::new();
+
+        // Helper to register listener and keep it alive
+        let mut reg_pointer = |target: web_sys::EventTarget,
+                               event_type: &str,
+                               closure: Closure<dyn FnMut(PointerEvent)>|
+         -> Result<(), JsValue> {
+            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback(event_type, &callback)?;
+            listeners.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: None,
+                _closure: Box::new(closure),
+            });
+            Ok(())
+        };
+
+        let mut reg_keyboard = |target: web_sys::EventTarget,
+                                event_type: &str,
+                                closure: Closure<dyn FnMut(KeyboardEvent)>|
+         -> Result<(), JsValue> {
+            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback(event_type, &callback)?;
+            listeners.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: None,
+                _closure: Box::new(closure),
+            });
+            Ok(())
+        };
+
+        let mut reg_wheel = |target: web_sys::EventTarget,
+                             event_type: &str,
+                             closure: Closure<dyn FnMut(WheelEvent)>,
+                             options: web_sys::AddEventListenerOptions|
+         -> Result<(), JsValue> {
+            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback_and_add_event_listener_options(
+                event_type,
+                &callback,
+                &options,
+            )?;
+            listeners.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: Some(options),
+                _closure: Box::new(closure),
+            });
+            Ok(())
+        };
+
+        let mut reg_clipboard = |target: web_sys::EventTarget,
+                                 event_type: &str,
+                                 closure: Closure<dyn FnMut(ClipboardEvent)>|
+         -> Result<(), JsValue> {
+            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback(event_type, &callback)?;
+            listeners.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: None,
+                _closure: Box::new(closure),
+            });
+            Ok(())
+        };
+
+        let mut reg_generic = |target: web_sys::EventTarget,
+                               event_type: &str,
+                               closure: Closure<dyn FnMut(Event)>|
+         -> Result<(), JsValue> {
+            let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback(event_type, &callback)?;
+            listeners.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: None,
+                _closure: Box::new(closure),
+            });
+            Ok(())
+        };
 
         // -----------------------------------------------------------------------
         // Pointer events
@@ -94,19 +173,20 @@ impl WebRuntime {
         let on_pointer_down = {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
+            let canvas_html = canvas_html.clone();
             Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
                 e.prevent_default();
                 ui.focus_canvas();
-                {
+                let gesture_started = {
                     let mut a = app.borrow_mut();
-                    a.on_pointer_down(&e);
+                    a.on_pointer_down(&e)
+                };
+                if gesture_started {
+                    let _ = canvas_html.set_pointer_capture(e.pointer_id());
                 }
             })
         };
-        canvas_et.add_event_listener_with_callback(
-            "pointerdown",
-            on_pointer_down.as_ref().unchecked_ref(),
-        )?;
+        reg_pointer(canvas_et.clone(), "pointerdown", on_pointer_down)?;
 
         let on_pointer_move = {
             let app = Rc::clone(&app);
@@ -115,49 +195,54 @@ impl WebRuntime {
                 app.borrow_mut().on_pointer_move(&e);
             })
         };
-        canvas_et.add_event_listener_with_callback(
-            "pointermove",
-            on_pointer_move.as_ref().unchecked_ref(),
-        )?;
+        reg_pointer(canvas_et.clone(), "pointermove", on_pointer_move)?;
 
         let on_pointer_up = {
             let app = Rc::clone(&app);
+            let canvas_html = canvas_html.clone();
             Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
                 e.prevent_default();
                 app.borrow_mut().on_pointer_up(&e);
+                let _ = canvas_html.release_pointer_capture(e.pointer_id());
             })
         };
-        canvas_et.add_event_listener_with_callback(
-            "pointerup",
-            on_pointer_up.as_ref().unchecked_ref(),
-        )?;
+        reg_pointer(canvas_et.clone(), "pointerup", on_pointer_up)?;
 
         let on_pointer_cancel = {
             let app = Rc::clone(&app);
+            let canvas_html = canvas_html.clone();
             Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
                 app.borrow_mut().on_pointer_cancel(&e);
+                let _ = canvas_html.release_pointer_capture(e.pointer_id());
             })
         };
-        canvas_et.add_event_listener_with_callback(
-            "pointercancel",
-            on_pointer_cancel.as_ref().unchecked_ref(),
-        )?;
+        reg_pointer(canvas_et.clone(), "pointercancel", on_pointer_cancel)?;
 
-        let on_wheel = {
+        let on_lost_pointer_capture = {
             let app = Rc::clone(&app);
-            Closure::<dyn FnMut(WheelEvent)>::new(move |e: WheelEvent| {
-                e.prevent_default();
-                app.borrow_mut().on_wheel(&e);
+            Closure::<dyn FnMut(PointerEvent)>::new(move |e: PointerEvent| {
+                let active_ptr_id = {
+                    let a = app.borrow();
+                    match &a.input {
+                        InputState::Drawing { ptr_id, .. } => Some(*ptr_id),
+                        InputState::Lassoing { ptr_id, .. } => Some(*ptr_id),
+                        InputState::Erasing { ptr_id, .. } => Some(*ptr_id),
+                        InputState::Panning { ptr_id, .. } => Some(*ptr_id),
+                        InputState::MovingSel { ptr_id, .. } => Some(*ptr_id),
+                        InputState::ScalingSel { ptr_id, .. } => Some(*ptr_id),
+                        InputState::RotatingSel { ptr_id, .. } => Some(*ptr_id),
+                        InputState::MarqueeSelecting { ptr_id, .. } => Some(*ptr_id),
+                        InputState::Idle => None,
+                    }
+                };
+                if let Some(pid) = active_ptr_id {
+                    if pid == e.pointer_id() {
+                        app.borrow_mut().on_pointer_cancel(&e);
+                    }
+                }
             })
         };
-        // Non-passive wheel listener
-        let opts = AddEventListenerOptions::new();
-        opts.set_passive(false);
-        canvas_et.add_event_listener_with_callback_and_add_event_listener_options(
-            "wheel",
-            on_wheel.as_ref().unchecked_ref(),
-            &opts,
-        )?;
+        reg_pointer(canvas_et.clone(), "lostpointercapture", on_lost_pointer_capture)?;
 
         // -----------------------------------------------------------------------
         // Keyboard events
@@ -186,60 +271,51 @@ impl WebRuntime {
             Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
                 let capturing = app.borrow().is_capturing();
                 if capturing {
-                    // Always let capture consume the key
                     e.prevent_default();
                     let mut a = app.borrow_mut();
                     a.on_key_down(&e);
-                    // Check for conflict after key down
                     let conflict = a.last_conflict.take();
                     drop(a);
                     if let Some(other_cmd) = conflict {
                         ui.show_conflict_alert(other_cmd);
                     }
-                    // Sync capture overlay after state change
                     let a = app.borrow();
                     ui.sync_capture_overlay(&a);
                     if !a.is_capturing() && ui.is_settings_open() {
-                        // Re-render shortcuts after capture finishes
                         drop(a);
                         let a = app.borrow();
                         ui.render_shortcuts(&a);
                     }
                     return;
                 }
-                // If settings modal is open, suppress normal shortcuts
                 if ui.is_settings_open() {
                     return;
                 }
-                // If target is an editable element, pass through
                 if is_editing_target(e.target()) {
                     return;
                 }
                 app.borrow_mut().on_key_down(&e);
             })
         };
-        window.add_event_listener_with_callback("keydown", on_keydown.as_ref().unchecked_ref())?;
+        reg_keyboard(window.clone().into(), "keydown", on_keydown)?;
 
         let on_keyup = {
             let app = Rc::clone(&app);
             Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
-                // keyup always forwarded — never filtered
                 app.borrow_mut().on_key_up(&e);
             })
         };
-        window.add_event_listener_with_callback("keyup", on_keyup.as_ref().unchecked_ref())?;
+        reg_keyboard(window.clone().into(), "keyup", on_keyup)?;
 
         let on_blur = {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
             Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
-                {
-                    app.borrow_mut().on_blur();
-                }
+                app.borrow_mut().on_blur();
                 ui.sync_capture_overlay(&app.borrow());
             })
         };
-        window.add_event_listener_with_callback("blur", on_blur.as_ref().unchecked_ref())?;
+        reg_generic(window.clone().into(), "blur", on_blur)?;
 
         let on_visibility = {
             let app = Rc::clone(&app);
@@ -247,18 +323,13 @@ impl WebRuntime {
             Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                     if doc.hidden() {
-                        {
-                            app.borrow_mut().on_blur();
-                        }
+                        app.borrow_mut().on_blur();
                         ui.sync_capture_overlay(&app.borrow());
                     }
                 }
             })
         };
-        document.add_event_listener_with_callback(
-            "visibilitychange",
-            on_visibility.as_ref().unchecked_ref(),
-        )?;
+        reg_generic(document.clone().into(), "visibilitychange", on_visibility)?;
 
         // -----------------------------------------------------------------------
         // Toolbar: tool buttons
@@ -273,7 +344,6 @@ impl WebRuntime {
             "pan",
             "select",
         ];
-        let mut tool_btns: Vec<Closure<dyn FnMut(Event)>> = Vec::new();
         for tool_name in tool_names {
             let app = Rc::clone(&app);
             let tool_name_owned = tool_name.to_string();
@@ -282,98 +352,107 @@ impl WebRuntime {
             });
             let btn_id = format!("btn-{}", tool_name);
             if let Some(el) = document.get_element_by_id(&btn_id) {
-                el.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
+                let target = el.dyn_into::<web_sys::EventTarget>()?;
+                reg_generic(target, "click", cb)?;
             }
-            tool_btns.push(cb);
         }
 
         // -----------------------------------------------------------------------
         // Action buttons
         // -----------------------------------------------------------------------
 
-        macro_rules! simple_btn {
-            ($id:expr, $method:ident) => {{
-                let app = Rc::clone(&app);
+        let mut reg_simple_btn = |id: &str, action: Rc<dyn Fn() + 'static>| -> Result<(), JsValue> {
+            if let Some(el) = document.get_element_by_id(id) {
+                let target = el.dyn_into::<web_sys::EventTarget>()?;
+                let act = Rc::clone(&action);
                 let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
-                    app.borrow_mut().$method();
+                    act();
                 });
-                if let Some(el) = document.get_element_by_id($id) {
-                    el.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
-                }
-                cb
-            }};
-        }
+                reg_generic(target, "click", cb)?;
+            }
+            Ok(())
+        };
 
-        let btn_undo = simple_btn!("btn-undo", action_undo);
-        let btn_redo = simple_btn!("btn-redo", action_redo);
-        let btn_clear = simple_btn!("btn-clear", action_clear);
-        let btn_save = simple_btn!("btn-save", action_save);
-        let btn_export_svg = simple_btn!("btn-export-svg", action_export_svg);
-        let btn_export_png = simple_btn!("btn-export-png", action_export_png);
+        reg_simple_btn("btn-undo", Rc::new({
+            let app = Rc::clone(&app);
+            move || app.borrow_mut().action_undo()
+        }))?;
+
+        reg_simple_btn("btn-redo", Rc::new({
+            let app = Rc::clone(&app);
+            move || app.borrow_mut().action_redo()
+        }))?;
+
+        reg_simple_btn("btn-clear", Rc::new({
+            let app = Rc::clone(&app);
+            move || app.borrow_mut().action_clear()
+        }))?;
+
+        reg_simple_btn("btn-save", Rc::new({
+            let app = Rc::clone(&app);
+            move || app.borrow_mut().action_save()
+        }))?;
+
+        reg_simple_btn("btn-export-svg", Rc::new({
+            let app = Rc::clone(&app);
+            move || app.borrow_mut().action_export_svg()
+        }))?;
+
+        reg_simple_btn("btn-export-png", Rc::new({
+            let app = Rc::clone(&app);
+            move || app.borrow_mut().action_export_png()
+        }))?;
 
         // -----------------------------------------------------------------------
         // Settings button
         // -----------------------------------------------------------------------
 
-        let btn_settings = {
+        if let Some(el) = document.get_element_by_id("btn-settings") {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                 let a = app.borrow();
                 ui.render_shortcuts(&a);
                 drop(a);
                 ui.open_settings();
-            })
-        };
-        if let Some(el) = document.get_element_by_id("btn-settings") {
-            el.add_event_listener_with_callback("click", btn_settings.as_ref().unchecked_ref())?;
+            });
+            reg_generic(target, "click", cb)?;
         }
 
-        // We need two independent closures for the two close buttons
-        let close_settings_rc: Rc<dyn Fn()> = Rc::new({
+        let close_settings_rc: Rc<dyn Fn() + 'static> = Rc::new({
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
             move || {
-                {
-                    app.borrow_mut().cancel_capture();
-                }
-                {
-                    ui.sync_capture_overlay(&app.borrow());
-                }
+                app.borrow_mut().cancel_capture();
+                ui.sync_capture_overlay(&app.borrow());
                 ui.close_settings();
             }
         });
 
-        let btn_settings_close = {
-            let f = Rc::clone(&close_settings_rc);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
-                f();
-            })
-        };
         if let Some(el) = document.get_element_by_id("btn-settings-close") {
-            el.add_event_listener_with_callback(
-                "click",
-                btn_settings_close.as_ref().unchecked_ref(),
-            )?;
-        }
-
-        let btn_settings_close_footer = {
             let f = Rc::clone(&close_settings_rc);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                 f();
-            })
-        };
-        if let Some(el) = document.get_element_by_id("btn-settings-close-footer") {
-            el.add_event_listener_with_callback(
-                "click",
-                btn_settings_close_footer.as_ref().unchecked_ref(),
-            )?;
+            });
+            reg_generic(target, "click", cb)?;
         }
 
-        let btn_settings_reset = {
+        if let Some(el) = document.get_element_by_id("btn-settings-close-footer") {
+            let f = Rc::clone(&close_settings_rc);
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                f();
+            });
+            reg_generic(target, "click", cb)?;
+        }
+
+        if let Some(el) = document.get_element_by_id("btn-settings-reset") {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
                 let confirmed = web_sys::window()
                     .and_then(|w| {
                         w.confirm_with_message(
@@ -383,30 +462,23 @@ impl WebRuntime {
                     })
                     .unwrap_or(false);
                 if confirmed {
-                    {
-                        app.borrow_mut().reset_shortcuts_to_defaults();
-                    }
+                    app.borrow_mut().reset_shortcuts_to_defaults();
                     let a = app.borrow();
                     ui.render_shortcuts(&a);
                 }
-            })
-        };
-        if let Some(el) = document.get_element_by_id("btn-settings-reset") {
-            el.add_event_listener_with_callback(
-                "click",
-                btn_settings_reset.as_ref().unchecked_ref(),
-            )?;
+            });
+            reg_generic(target, "click", cb)?;
         }
 
         // -----------------------------------------------------------------------
-        // Shortcuts table — delegated click handler for remove + add buttons
+        // Shortcuts table — delegated click handler
         // -----------------------------------------------------------------------
 
-        let shortcuts_table_click = {
+        if let Some(container) = document.get_element_by_id("shortcuts-table-container") {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
-            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
-                // Walk up the DOM to find which button was clicked
+            let target = container.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
                 let target = match e.target() {
                     Some(t) => t,
                     None => return,
@@ -415,63 +487,52 @@ impl WebRuntime {
                     Ok(el) => el,
                     Err(_) => return,
                 };
-                // Check if it's a remove button
                 if el.class_list().contains("shortcut-badge-remove") {
                     if let (Some(cmd_id), Some(idx_str)) =
                         (el.get_attribute("data-cmd"), el.get_attribute("data-idx"))
                     {
                         if let Ok(idx) = idx_str.parse::<usize>() {
                             e.stop_propagation();
-                            {
-                                app.borrow_mut().remove_shortcut_binding(&cmd_id, idx);
-                            }
+                            app.borrow_mut().remove_shortcut_binding(&cmd_id, idx);
                             let a = app.borrow();
                             ui.render_shortcuts(&a);
                         }
                     }
                     return;
                 }
-                // Check if it's an add/bind button
                 if el.class_list().contains("add-binding-btn") {
                     if let Some(cmd_id) = el.get_attribute("data-cmd") {
-                        {
-                            app.borrow_mut().start_capture(&cmd_id);
-                        }
+                        app.borrow_mut().start_capture(&cmd_id);
                         let a = app.borrow();
                         ui.sync_capture_overlay(&a);
                     }
                 }
-            })
-        };
-        if let Some(container) = document.get_element_by_id("shortcuts-table-container") {
-            container.add_event_listener_with_callback(
-                "click",
-                shortcuts_table_click.as_ref().unchecked_ref(),
-            )?;
+            });
+            reg_generic(target, "click", cb)?;
         }
 
         // -----------------------------------------------------------------------
         // Load button — trigger hidden file input
         // -----------------------------------------------------------------------
 
-        let btn_load = {
-            let ui = Rc::clone(&ui);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
-                ui.trigger_load_input_click();
-            })
-        };
         if let Some(el) = document.get_element_by_id("btn-load") {
-            el.add_event_listener_with_callback("click", btn_load.as_ref().unchecked_ref())?;
+            let ui = Rc::clone(&ui);
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                ui.trigger_load_input_click();
+            });
+            reg_generic(target, "click", cb)?;
         }
 
         // -----------------------------------------------------------------------
         // File input change — FileReader
         // -----------------------------------------------------------------------
 
-        let load_input_change = {
+        if let Some(el) = document.get_element_by_id("load-input") {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
-            Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
                 let input_el = match ui.get_element("load-input") {
                     Some(el) => el,
                     None => return,
@@ -513,23 +574,18 @@ impl WebRuntime {
                 .unchecked_into::<js_sys::Function>();
                 reader.set_onload(Some(&onload));
                 let _ = reader.read_as_text(&file);
-            })
-        };
-        if let Some(el) = document.get_element_by_id("load-input") {
-            el.add_event_listener_with_callback(
-                "change",
-                load_input_change.as_ref().unchecked_ref(),
-            )?;
+            });
+            reg_generic(target, "change", cb)?;
         }
-        // Clear input value so selecting the same file again triggers a change event.
 
         // -----------------------------------------------------------------------
         // Brush controls
         // -----------------------------------------------------------------------
 
-        let width_slider = {
+        if let Some(el) = document.get_element_by_id("width-slider") {
             let app = Rc::clone(&app);
-            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
                 let input = match e
                     .target()
                     .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
@@ -540,15 +596,14 @@ impl WebRuntime {
                 if let Ok(w) = input.value().parse::<f32>() {
                     app.borrow_mut().set_brush_width(w);
                 }
-            })
-        };
-        if let Some(el) = document.get_element_by_id("width-slider") {
-            el.add_event_listener_with_callback("input", width_slider.as_ref().unchecked_ref())?;
+            });
+            reg_generic(target, "input", cb)?;
         }
 
-        let color_picker = {
+        if let Some(el) = document.get_element_by_id("color-picker") {
             let app = Rc::clone(&app);
-            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
                 let input = match e
                     .target()
                     .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
@@ -566,20 +621,20 @@ impl WebRuntime {
                         app.borrow_mut().set_brush_color(r, g, b);
                     }
                 }
-            })
-        };
-        if let Some(el) = document.get_element_by_id("color-picker") {
-            el.add_event_listener_with_callback("input", color_picker.as_ref().unchecked_ref())?;
+            });
+            reg_generic(target, "input", cb)?;
         }
 
         // -----------------------------------------------------------------------
+        // Paste
+        // -----------------------------------------------------------------------
+
         let on_paste = {
             let app = Rc::clone(&app);
             Closure::<dyn FnMut(ClipboardEvent)>::new(move |e: ClipboardEvent| {
                 if is_editing_target(e.target()) {
                     return;
                 }
-
                 let clipboard_data = match e.clipboard_data() {
                     Some(d) => d,
                     None => return,
@@ -596,7 +651,6 @@ impl WebRuntime {
                         }
                     }
                 }
-
                 if has_image {
                     let item = image_item.unwrap();
                     let file = match item.get_as_file() {
@@ -608,12 +662,10 @@ impl WebRuntime {
                         Ok(r) => r,
                         Err(_) => return,
                     };
-
                     let object_url = match web_sys::Url::create_object_url_with_blob(&file) {
                         Ok(url) => url,
                         Err(_) => return,
                     };
-
                     let revoked = Rc::new(std::cell::Cell::new(false));
                     let object_url_clone = object_url.clone();
                     let object_url_clone2 = object_url.clone();
@@ -627,7 +679,6 @@ impl WebRuntime {
                             }
                         }
                     };
-
                     let app_c = Rc::clone(&app);
                     let revoke_fn_onload = revoke_fn.clone();
                     let onload = {
@@ -662,7 +713,6 @@ impl WebRuntime {
                                 }
                             };
                             let bytes = js_sys::Uint8Array::new(&array_buf).to_vec();
-
                             let img = match web_sys::HtmlImageElement::new() {
                                 Ok(i) => i,
                                 Err(_) => {
@@ -670,7 +720,6 @@ impl WebRuntime {
                                     return;
                                 }
                             };
-
                             let app_cc = Rc::clone(&app_c);
                             let bytes_rc = Rc::new(bytes);
                             let img_onload = {
@@ -688,34 +737,29 @@ impl WebRuntime {
                                 .unchecked_into::<js_sys::Function>()
                             };
                             img.set_onload(Some(&img_onload));
-
                             let revoke_fn_img_error = revoke_fn_onload.clone();
                             let img_onerror = Closure::once_into_js(move || {
                                 revoke_fn_img_error();
                             })
                             .unchecked_into::<js_sys::Function>();
                             img.set_onerror(Some(&img_onerror));
-
                             img.set_src(&object_url_clone2);
                         })
                         .unchecked_into::<js_sys::Function>()
                     };
                     reader.set_onload(Some(&onload));
-
                     let revoke_fn_reader_error = revoke_fn.clone();
                     let reader_onerror = Closure::once_into_js(move |_e: ProgressEvent| {
                         revoke_fn_reader_error();
                     })
                     .unchecked_into::<js_sys::Function>();
                     reader.set_onerror(Some(&reader_onerror));
-
                     let revoke_fn_reader_abort = revoke_fn.clone();
                     let reader_onabort = Closure::once_into_js(move |_e: ProgressEvent| {
                         revoke_fn_reader_abort();
                     })
                     .unchecked_into::<js_sys::Function>();
                     reader.set_onabort(Some(&reader_onabort));
-
                     let _ = reader.read_as_array_buffer(&file);
                     e.prevent_default();
                 } else if app.borrow().clipboard.is_some() {
@@ -724,46 +768,11 @@ impl WebRuntime {
                 }
             })
         };
-        window.add_event_listener_with_callback("paste", on_paste.as_ref().unchecked_ref())?;
+        reg_clipboard(window.clone().into(), "paste", on_paste)?;
 
         // -----------------------------------------------------------------------
-        // ResizeObserver
+        // Selection bar
         // -----------------------------------------------------------------------
-
-        let resize_cb: Closure<dyn FnMut(js_sys::Array)> = {
-            let app = Rc::clone(&app);
-            Closure::new(move |_entries: js_sys::Array| {
-                app.borrow_mut().resize();
-            })
-        };
-        let resize_observer = ResizeObserver::new(resize_cb.as_ref().unchecked_ref())?;
-        // Observe the canvas
-        if let Some(canvas_el) = document.get_element_by_id(canvas_id) {
-            resize_observer.observe(&canvas_el);
-        }
-
-        // -----------------------------------------------------------------------
-        // Initial state
-        // -----------------------------------------------------------------------
-        {
-            let a = app.borrow();
-            let tool_name = match a.session.active_tool {
-                Tool::Pen => "pen",
-                Tool::Pencil => "pencil",
-                Tool::Highlighter => "highlighter",
-                Tool::StrokeEraser => "eraser",
-                Tool::Lasso => "lasso",
-                Tool::Select => "select",
-                Tool::Pan => "pan",
-            };
-            ui.sync_tool_buttons(tool_name);
-            ui.sync_brush_controls(&a.session.active_brush);
-            ui.update_status(&a);
-            ui.sync_selection_bar(&a);
-        }
-        app.borrow().redraw();
-
-        let mut selection_bar_handlers: Vec<Closure<dyn FnMut(Event)>> = Vec::new();
 
         let actions = [
             ("btn-sel-bring-forward", Command::BringForward),
@@ -782,42 +791,54 @@ impl WebRuntime {
                 app.borrow_mut().dispatch_command(cmd);
             });
             if let Some(el) = document.get_element_by_id(id) {
-                el.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
+                let target = el.dyn_into::<web_sys::EventTarget>()?;
+                reg_generic(target, "click", cb)?;
             }
-            selection_bar_handlers.push(cb);
         }
 
-        let sel_width_oninput = {
+        if let Some(el) = document.get_element_by_id("sel-width-slider") {
             let app = Rc::clone(&app);
-            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
                 if let Some(target) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
                     if let Ok(w) = target.value().parse::<f32>() {
                         app.borrow_mut().set_selection_width_preview(w);
                     }
                 }
-            })
-        };
-        if let Some(el) = document.get_element_by_id("sel-width-slider") {
-            el.add_event_listener_with_callback("input", sel_width_oninput.as_ref().unchecked_ref())?;
+            });
+            reg_generic(target, "input", cb)?;
         }
-        selection_bar_handlers.push(sel_width_oninput);
 
-        let sel_width_commit = {
-            let app = Rc::clone(&app);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
-                app.borrow_mut().commit_style_preview();
-            })
+        let reg_sel_width_commit = |el: Element, app: Rc<RefCell<StonepenApp>>, event_type: &str, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new({
+                let app = Rc::clone(&app);
+                move |_: Event| {
+                    app.borrow_mut().commit_style_preview();
+                }
+            });
+            let callback = cb.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback(event_type, &callback)?;
+            listeners_ref.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: None,
+                _closure: Box::new(cb),
+            });
+            Ok(())
         };
-        if let Some(el) = document.get_element_by_id("sel-width-slider") {
-            el.add_event_listener_with_callback("change", sel_width_commit.as_ref().unchecked_ref())?;
-            el.add_event_listener_with_callback("blur", sel_width_commit.as_ref().unchecked_ref())?;
-            el.add_event_listener_with_callback("pointerup", sel_width_commit.as_ref().unchecked_ref())?;
-        }
-        selection_bar_handlers.push(sel_width_commit);
 
-        let sel_color_oninput = {
+        if let Some(el) = document.get_element_by_id("sel-width-slider") {
+            reg_sel_width_commit(el.clone(), Rc::clone(&app), "change", &mut listeners)?;
+            reg_sel_width_commit(el.clone(), Rc::clone(&app), "blur", &mut listeners)?;
+            reg_sel_width_commit(el.clone(), Rc::clone(&app), "pointerup", &mut listeners)?;
+        }
+
+        if let Some(el) = document.get_element_by_id("sel-color-picker") {
             let app = Rc::clone(&app);
-            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
                 if let Some(target) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
                     let hex = target.value();
                     if hex.len() >= 7 {
@@ -830,56 +851,111 @@ impl WebRuntime {
                         }
                     }
                 }
-            })
-        };
-        if let Some(el) = document.get_element_by_id("sel-color-picker") {
-            el.add_event_listener_with_callback("input", sel_color_oninput.as_ref().unchecked_ref())?;
+            });
+            reg_generic(target, "input", cb)?;
         }
-        selection_bar_handlers.push(sel_color_oninput);
 
-        let sel_color_commit = {
+        let reg_sel_color_commit = |el: Element, app: Rc<RefCell<StonepenApp>>, event_type: &str, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
+            let target = el.dyn_into::<web_sys::EventTarget>()?;
+            let cb = Closure::<dyn FnMut(Event)>::new({
+                let app = Rc::clone(&app);
+                move |_: Event| {
+                    app.borrow_mut().commit_style_preview();
+                }
+            });
+            let callback = cb.as_ref().clone().unchecked_into::<js_sys::Function>();
+            target.add_event_listener_with_callback(event_type, &callback)?;
+            listeners_ref.push(Listener {
+                target,
+                event_type: event_type.to_string(),
+                callback,
+                options: None,
+                _closure: Box::new(cb),
+            });
+            Ok(())
+        };
+
+        if let Some(el) = document.get_element_by_id("sel-color-picker") {
+            reg_sel_color_commit(el.clone(), Rc::clone(&app), "change", &mut listeners)?;
+            reg_sel_color_commit(el.clone(), Rc::clone(&app), "blur", &mut listeners)?;
+            reg_sel_color_commit(el.clone(), Rc::clone(&app), "pointerup", &mut listeners)?;
+        }
+
+        // -----------------------------------------------------------------------
+        // Wheel events (non-passive)
+        // -----------------------------------------------------------------------
+
+        let on_wheel = {
             let app = Rc::clone(&app);
-            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
-                app.borrow_mut().commit_style_preview();
+            Closure::<dyn FnMut(WheelEvent)>::new(move |e: WheelEvent| {
+                e.prevent_default();
+                app.borrow_mut().on_wheel(&e);
             })
         };
-        if let Some(el) = document.get_element_by_id("sel-color-picker") {
-            el.add_event_listener_with_callback("change", sel_color_commit.as_ref().unchecked_ref())?;
-            el.add_event_listener_with_callback("blur", sel_color_commit.as_ref().unchecked_ref())?;
-            el.add_event_listener_with_callback("pointerup", sel_color_commit.as_ref().unchecked_ref())?;
+        let opts = AddEventListenerOptions::new();
+        opts.set_passive(false);
+        reg_wheel(canvas_et.clone(), "wheel", on_wheel, opts)?;
+
+        // -----------------------------------------------------------------------
+        // ResizeObserver
+        // -----------------------------------------------------------------------
+
+        let resize_cb: Closure<dyn FnMut(js_sys::Array)> = {
+            let app = Rc::clone(&app);
+            Closure::new(move |_entries: js_sys::Array| {
+                app.borrow_mut().resize();
+            })
+        };
+        let resize_observer = ResizeObserver::new(resize_cb.as_ref().unchecked_ref())?;
+        if let Some(canvas_el) = document.get_element_by_id(canvas_id) {
+            resize_observer.observe(&canvas_el);
         }
-        selection_bar_handlers.push(sel_color_commit);
+
+        // -----------------------------------------------------------------------
+        // Initial UI Synchronization
+        // -----------------------------------------------------------------------
+
+        {
+            let a = app.borrow();
+            let tool_name = match a.session.active_tool {
+                Tool::Pen => "pen",
+                Tool::Pencil => "pencil",
+                Tool::Highlighter => "highlighter",
+                Tool::StrokeEraser => "eraser",
+                Tool::Lasso => "lasso",
+                Tool::Select => "select",
+                Tool::Pan => "pan",
+            };
+            ui.sync_tool_buttons(tool_name);
+            ui.sync_brush_controls(&a.session.active_brush);
+            ui.update_status(&a);
+            ui.sync_selection_bar(&a);
+            a.redraw();
+        }
 
         Ok(Self {
-            _on_pointer_down: on_pointer_down,
-            _on_pointer_move: on_pointer_move,
-            _on_pointer_up: on_pointer_up,
-            _on_pointer_cancel: on_pointer_cancel,
-            _on_wheel: on_wheel,
-            _on_keydown: on_keydown,
-            _on_keyup: on_keyup,
-            _on_blur: on_blur,
-            _on_visibility: on_visibility,
-            _tool_btns: tool_btns,
-            _btn_undo: btn_undo,
-            _btn_redo: btn_redo,
-            _btn_clear: btn_clear,
-            _btn_save: btn_save,
-            _btn_load: btn_load,
-            _btn_export_svg: btn_export_svg,
-            _btn_export_png: btn_export_png,
-            _btn_settings: btn_settings,
-            _btn_settings_close: btn_settings_close,
-            _btn_settings_close_footer: btn_settings_close_footer,
-            _btn_settings_reset: btn_settings_reset,
-            _width_slider: width_slider,
-            _color_picker: color_picker,
-            _load_input_change: load_input_change,
-            _on_paste: on_paste,
-            _resize_observer: resize_observer,
-            _resize_cb: resize_cb,
-            _shortcuts_table_click: shortcuts_table_click,
-            _selection_bar_handlers: selection_bar_handlers,
+            app,
+            ui,
+            listeners,
+            resize_observer: Some(resize_observer),
+            _resize_cb: Some(resize_cb),
         })
+    }
+
+    pub fn destroy(&mut self) {
+        for listener in self.listeners.drain(..) {
+            listener.remove();
+        }
+        if let Some(ref ro) = self.resize_observer.take() {
+            ro.disconnect();
+        }
+        self._resize_cb.take();
+        self.app.borrow_mut().reset_transient_input();
+    }
+}
+
+impl Drop for WebRuntime {
+    fn drop(&mut self) {
+        self.destroy();
     }
 }
