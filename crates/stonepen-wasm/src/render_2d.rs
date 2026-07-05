@@ -42,7 +42,21 @@ impl StrokeCacheEntry {
 
 struct ImageCacheEntry {
     img: HtmlImageElement,
-    _closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    object_url: String,
+    revoked: Rc<std::cell::Cell<bool>>,
+    _onload: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+    _onerror: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+}
+
+impl Drop for ImageCacheEntry {
+    fn drop(&mut self) {
+        self.img.set_onload(None);
+        self.img.set_onerror(None);
+        if !self.revoked.get() {
+            self.revoked.set(true);
+            let _ = web_sys::Url::revoke_object_url(&self.object_url);
+        }
+    }
 }
 
 pub struct Renderer {
@@ -213,20 +227,41 @@ impl Renderer {
                                 )
                                 .unwrap();
                                 let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
-                                html_img.set_src(&url);
+
+                                let revoked = Rc::new(std::cell::Cell::new(false));
 
                                 let canvas_clone = self.ctx.canvas().unwrap();
-                                let closure =
-                                    wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                                        let _ = canvas_clone.dispatch_event(
-                                            &web_sys::Event::new("redraw").unwrap(),
-                                        );
-                                    })
-                                        as Box<dyn FnMut()>);
-                                html_img.set_onload(Some(closure.as_ref().unchecked_ref()));
+                                let url_clone = url.clone();
+                                let revoked_clone = Rc::clone(&revoked);
+                                let onload = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                                    if !revoked_clone.get() {
+                                        revoked_clone.set(true);
+                                        let _ = web_sys::Url::revoke_object_url(&url_clone);
+                                    }
+                                    let _ = canvas_clone.dispatch_event(
+                                        &web_sys::Event::new("redraw").unwrap(),
+                                    );
+                                }) as Box<dyn FnMut()>);
+                                html_img.set_onload(Some(onload.as_ref().unchecked_ref()));
+
+                                let url_clone2 = url.clone();
+                                let revoked_clone2 = Rc::clone(&revoked);
+                                let onerror = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                                    if !revoked_clone2.get() {
+                                        revoked_clone2.set(true);
+                                        let _ = web_sys::Url::revoke_object_url(&url_clone2);
+                                    }
+                                }) as Box<dyn FnMut()>);
+                                html_img.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+
+                                html_img.set_src(&url);
+
                                 ImageCacheEntry {
                                     img: html_img,
-                                    _closure: closure,
+                                    object_url: url,
+                                    revoked,
+                                    _onload: Some(onload),
+                                    _onerror: Some(onerror),
                                 }
                             });
 
