@@ -30,4 +30,4 @@ wasm-pack build crates/stonepen-wasm --target web --out-dir ../../web/pkg
 
 ## License
 
-MIT
+GPL-3.0
