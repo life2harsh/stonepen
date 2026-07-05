@@ -404,3 +404,98 @@ button:focus-visible {
   color: var(--status-text);
   font-weight: normal;
 }
+
+/* Floating Selection Bar */
+#selection-bar {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--toolbar-bg);
+  border: 1px solid var(--toolbar-border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  z-index: 10;
+  pointer-events: auto;
+  animation: bar-fade-in 0.15s ease-out;
+}
+
+#selection-bar.hidden {
+  display: none !important;
+}
+
+@keyframes bar-fade-in {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+#sel-info-text {
+  font-weight: 500;
+  color: var(--title-color);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.v-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--separator);
+}
+
+.sel-btn-group {
+  display: flex;
+  gap: 4px;
+}
+
+#sel-style-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#sel-style-section label {
+  color: var(--status-text);
+  font-size: 11px;
+}
+
+.slider-wrapper, .color-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+#sel-width-slider {
+  width: 80px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#sel-color-picker {
+  width: 28px;
+  height: 24px;
+  border: 1px solid var(--input-border);
+  border-radius: 3px;
+  background: var(--input-bg);
+  cursor: pointer;
+  padding: 1px;
+}
+
+.mixed-badge {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #bd93f9;
+  color: #1a1916;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: bold;
+  pointer-events: none;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

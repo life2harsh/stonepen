@@ -39,6 +39,35 @@
     </header>
     <main id="canvas-container">
       <canvas id="ink-canvas" tabindex="0"></canvas>
+      <div id="selection-bar" class="hidden">
+        <span id="sel-info-text">1 item selected</span>
+        <div class="v-divider"></div>
+        <div class="sel-btn-group">
+          <button id="btn-sel-bring-forward" title="Bring Forward">Forward</button>
+          <button id="btn-sel-send-backward" title="Send Backward">Backward</button>
+          <button id="btn-sel-bring-to-front" title="Bring to Front">To Front</button>
+          <button id="btn-sel-send-to-back" title="Send to Back">To Back</button>
+        </div>
+        <div class="v-divider"></div>
+        <div class="sel-btn-group">
+          <button id="btn-sel-copy" title="Copy (Ctrl+C)">Copy</button>
+          <button id="btn-sel-cut" title="Cut (Ctrl+X)">Cut</button>
+          <button id="btn-sel-duplicate" title="Duplicate (Ctrl+D)">Duplicate</button>
+          <button id="btn-sel-delete" title="Delete (Del)">Delete</button>
+        </div>
+        <div id="sel-style-section" class="hidden">
+          <div class="v-divider"></div>
+          <label for="sel-width-slider">Width</label>
+          <div class="slider-wrapper">
+            <input id="sel-width-slider" type="range" min="0.5" max="48" step="0.5" value="3">
+            <span id="sel-width-mixed" class="mixed-badge hidden">mixed</span>
+          </div>
+          <div class="color-wrapper">
+            <input id="sel-color-picker" type="color" value="#000000" title="Selection color">
+            <span id="sel-color-mixed" class="mixed-badge hidden">mixed</span>
+          </div>
+        </div>
+      </div>
     </main>
     <footer id="status-bar">strokes: 0  selected: 0  tool: Pen  zoom: 100%  saved</footer>
   </div>
