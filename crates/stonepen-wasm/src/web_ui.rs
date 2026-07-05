@@ -14,15 +14,20 @@ use stonepen_core::shortcuts::Command;
 pub struct WebUi {
     window: Window,
     document: Document,
+    pub canvas_id: String,
 }
 
 impl WebUi {
-    pub fn new() -> Result<Self, JsValue> {
+    pub fn new(canvas_id: &str) -> Result<Self, JsValue> {
         let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
         let document = window
             .document()
             .ok_or_else(|| JsValue::from_str("no document"))?;
-        Ok(Self { window, document })
+        Ok(Self {
+            window,
+            document,
+            canvas_id: canvas_id.to_string(),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -66,7 +71,7 @@ impl WebUi {
                 }
             }
         }
-        if let Some(canvas) = self.document.get_element_by_id("ink-canvas") {
+        if let Some(canvas) = self.document.get_element_by_id(&self.canvas_id) {
             let _ = canvas.set_class_name("");
             match active_tool_name {
                 "pan" => {
@@ -91,7 +96,7 @@ impl WebUi {
     // -----------------------------------------------------------------------
 
     pub fn set_cursor(&self, cursor_str: &str) {
-        if let Some(canvas) = self.document.get_element_by_id("ink-canvas") {
+        if let Some(canvas) = self.document.get_element_by_id(&self.canvas_id) {
             if let Ok(html_canvas) = canvas.dyn_into::<web_sys::HtmlCanvasElement>() {
                 let _ = html_canvas.style().set_property("cursor", cursor_str);
             }
@@ -358,7 +363,7 @@ impl WebUi {
     // -----------------------------------------------------------------------
 
     pub fn focus_canvas(&self) {
-        if let Some(el) = self.document.get_element_by_id("ink-canvas") {
+        if let Some(el) = self.document.get_element_by_id(&self.canvas_id) {
             if let Ok(html) = el.dyn_into::<HtmlElement>() {
                 let _ = html.focus();
             }
