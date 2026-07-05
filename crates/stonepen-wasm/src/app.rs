@@ -188,17 +188,41 @@ impl StonepenApp {
         })
     }
 
-    pub fn on_pointer_down(&mut self, e: &PointerEvent) {
+    pub fn should_start_gesture(tool: Tool, pointer_kind: stonepen_core::point::PointerKind, buttons: u16) -> bool {
+        match tool {
+            Tool::Pen | Tool::Pencil | Tool::Highlighter => {
+                match pointer_kind {
+                    stonepen_core::point::PointerKind::Pen => true,
+                    stonepen_core::point::PointerKind::Mouse => buttons & 1 != 0,
+                    _ => false,
+                }
+            }
+            Tool::StrokeEraser | Tool::Lasso | Tool::Pan | Tool::Select => true,
+        }
+    }
+
+    pub fn should_cancel_gesture(input: &InputState, ptr_id: i32) -> bool {
+        match input {
+            InputState::Drawing { ptr_id: id, .. } => *id == ptr_id,
+            InputState::Lassoing { ptr_id: id, .. } => *id == ptr_id,
+            InputState::Erasing { ptr_id: id, .. } => *id == ptr_id,
+            InputState::Panning { ptr_id: id, .. } => *id == ptr_id,
+            InputState::MovingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::ScalingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::RotatingSel { ptr_id: id, .. } => *id == ptr_id,
+            InputState::MarqueeSelecting { ptr_id: id, .. } => *id == ptr_id,
+            InputState::Idle => false,
+        }
+    }
+
+    pub fn on_pointer_down(&mut self, e: &PointerEvent) -> bool {
         self.commit_nudge();
         e.prevent_default();
         let pi = PointerInput::from_event(e, &self.canvas);
+        let mut gesture_started = false;
         match self.effective_tool() {
             Tool::Pen | Tool::Pencil | Tool::Highlighter => {
-                let draws = match pi.kind {
-                    PointerKind::Pen => true,
-                    PointerKind::Mouse => pi.buttons & 1 != 0,
-                    _ => false,
-                };
+                let draws = Self::should_start_gesture(self.effective_tool(), pi.kind, pi.buttons);
                 if draws {
                     let parent_id = self.session.doc.annotation_target_image();
                     let parent_xform_inv = if let Some(pid) = parent_id {
@@ -227,6 +251,7 @@ impl StonepenApp {
                         parent_id,
                         parent_xform_inv,
                     };
+                    gesture_started = true;
                 }
             }
             Tool::StrokeEraser => {
@@ -236,6 +261,7 @@ impl StonepenApp {
                     ptr_id: pi.id,
                     erased,
                 };
+                gesture_started = true;
             }
             Tool::Lasso => {
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
@@ -250,6 +276,7 @@ impl StonepenApp {
                     polygon: vec![world],
                     intent,
                 };
+                gesture_started = true;
             }
             Tool::Pan => {
                 self.input = InputState::Panning {
@@ -257,6 +284,7 @@ impl StonepenApp {
                     last_sx: pi.x,
                     last_sy: pi.y,
                 };
+                gesture_started = true;
             }
             Tool::Select => {
                 let world_pos = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
@@ -279,6 +307,7 @@ impl StonepenApp {
                             start_angle,
                             before,
                         };
+                        gesture_started = true;
                     }
                     SelHit::Scale(handle) => {
                         let roots = self.session.doc.transform_roots();
@@ -305,6 +334,7 @@ impl StonepenApp {
                             img_xform,
                             img_size,
                         };
+                        gesture_started = true;
                     }
                     SelHit::Move => {
                         let roots = self.session.doc.transform_roots();
@@ -318,24 +348,23 @@ impl StonepenApp {
                             start_world,
                             before,
                         };
+                        gesture_started = true;
                     }
                     SelHit::None => {
                         let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
                         if let Some(id) = clicked {
                             let is_selected = self.session.doc.runtime.sel_items.contains(&id);
                             if e.shift_key() {
-                                // Toggle item selection
                                 stonepen_core::apply_selection_hits(
                                     &mut self.session.doc,
                                     &[id],
                                     SelectionIntent::Toggle,
                                 );
                                 if is_selected {
-                                    // Shift-click selected item: remove it and do NOT start moving
                                     self.update_cursor("default");
                                     self.input = InputState::Idle;
+                                    gesture_started = false;
                                 } else {
-                                    // Shift-click unselected item: add it and start moving
                                     let roots = self.session.doc.transform_roots();
                                     let before = roots
                                         .iter()
@@ -349,10 +378,10 @@ impl StonepenApp {
                                         start_world,
                                         before,
                                     };
+                                    gesture_started = true;
                                 }
                             } else {
                                 if is_selected {
-                                    // plain click already-selected item: preserve selection and start moving
                                     let roots = self.session.doc.transform_roots();
                                     let before = roots
                                         .iter()
@@ -366,8 +395,8 @@ impl StonepenApp {
                                         start_world,
                                         before,
                                     };
+                                    gesture_started = true;
                                 } else {
-                                    // plain click unselected item: replace selection and start moving
                                     stonepen_core::apply_selection_hits(
                                         &mut self.session.doc,
                                         &[id],
@@ -386,6 +415,7 @@ impl StonepenApp {
                                         start_world,
                                         before,
                                     };
+                                    gesture_started = true;
                                 }
                             }
                         } else {
@@ -403,12 +433,14 @@ impl StonepenApp {
                                 active: false,
                                 intent,
                             };
+                            gesture_started = true;
                         }
                     }
                 }
             }
         }
         self.redraw();
+        gesture_started
     }
 
     pub fn on_pointer_move(&mut self, e: &PointerEvent) {
