@@ -229,18 +229,26 @@ impl WebRuntime {
 
         let on_blur = {
             let app = Rc::clone(&app);
+            let ui = Rc::clone(&ui);
             Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
-                app.borrow_mut().on_blur();
+                {
+                    app.borrow_mut().on_blur();
+                }
+                ui.sync_capture_overlay(&app.borrow());
             })
         };
         window.add_event_listener_with_callback("blur", on_blur.as_ref().unchecked_ref())?;
 
         let on_visibility = {
             let app = Rc::clone(&app);
+            let ui = Rc::clone(&ui);
             Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                     if doc.hidden() {
-                        app.borrow_mut().on_blur();
+                        {
+                            app.borrow_mut().on_blur();
+                        }
+                        ui.sync_capture_overlay(&app.borrow());
                     }
                 }
             })
@@ -511,15 +519,7 @@ impl WebRuntime {
                 load_input_change.as_ref().unchecked_ref(),
             )?;
         }
-        // Reset input value so the same file can be re-selected.
-        // This is done after the change event fires from app logic;
-        // the input is cleared in web_ui.clear_load_input_value() which is called
-        // by action_load via the onload callback — we rely on the fact that the
-        // value is always reset after reading, which we add a separate approach:
-        // actually we add a closure wrapping the onload that also clears the value.
-        // (Already handled: the input.set_value("") is called in the load_input_change closure
-        //  after read_as_text, but we should do it after load. Let the app do it on
-        //  next file-input-change by clearing prior value in trigger_load_input_click.)
+        // Clear input value so selecting the same file again triggers a change event.
 
         // -----------------------------------------------------------------------
         // Brush controls
@@ -574,6 +574,10 @@ impl WebRuntime {
         let on_paste = {
             let app = Rc::clone(&app);
             Closure::<dyn FnMut(ClipboardEvent)>::new(move |e: ClipboardEvent| {
+                if is_editing_target(e.target()) {
+                    return;
+                }
+
                 let clipboard_data = match e.clipboard_data() {
                     Some(d) => d,
                     None => return,
@@ -712,7 +716,7 @@ impl WebRuntime {
 
                     let _ = reader.read_as_array_buffer(&file);
                     e.prevent_default();
-                } else {
+                } else if app.borrow().clipboard.is_some() {
                     e.prevent_default();
                     app.borrow_mut().dispatch_command(Command::Paste);
                 }

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use crate::brush::Brush;
-use crate::clipboard::ClipboardBundle;
+use crate::clipboard::{ClipboardBundle, ClipboardItemRecord};
 use crate::doc::InkDoc;
 use crate::export_json;
 use crate::export_svg;
@@ -272,11 +272,10 @@ impl InkSession {
             }
         }
 
-        let mut copied_items = Vec::new();
+        let mut copied_records = Vec::new();
         let mut required_assets = Vec::new();
 
-        // Preserve original draw order by traversing layers and items in order
-        for layer in &self.doc.layers {
+        for (li, layer) in self.doc.layers.iter().enumerate() {
             for (idx, item) in layer.items.iter().enumerate() {
                 if to_copy_ids.contains(&item.id()) {
                     let mut cloned = item.clone();
@@ -302,7 +301,12 @@ impl InkSession {
                             }
                         }
                     }
-                    copied_items.push((idx, cloned));
+                    copied_records.push(ClipboardItemRecord {
+                        source_layer_id: layer.id,
+                        source_layer_rank: li,
+                        source_idx: idx,
+                        item: cloned,
+                    });
                 }
             }
         }
@@ -311,11 +315,9 @@ impl InkSession {
         let source_origin = selection_bbox
             .map(|b| Point2::new(b.min_x, b.min_y))
             .unwrap_or_else(|| Point2::new(0.0, 0.0));
-        let layer_id = self.doc.active_layer_id;
 
         Some(ClipboardBundle {
-            layer_id,
-            items: copied_items,
+            records: copied_records,
             assets: required_assets,
             source_origin,
         })
@@ -369,11 +371,11 @@ impl InkSession {
             }
         }
 
-        let (mut pasted_items_with_idx, id_map) = bundle.build_paste_items(offset);
+        let (mut pasted_records, id_map) = bundle.build_paste_items(offset);
 
         // Remap asset IDs for any image items
-        for (_, item) in &mut pasted_items_with_idx {
-            if let InkItem::Image(img) = item {
+        for rec in &mut pasted_records {
+            if let InkItem::Image(img) = &mut rec.item {
                 if let Some(&new_aid) = asset_id_map.get(&img.asset_id) {
                     img.asset_id = new_aid;
                 }
@@ -382,10 +384,10 @@ impl InkSession {
 
         let mut pasted_roots = HashSet::new();
         let mut all_pasted_ids = Vec::new();
-        for (_, item) in &pasted_items_with_idx {
-            let item_id = item.id();
+        for rec in &pasted_records {
+            let item_id = rec.item.id();
             all_pasted_ids.push(item_id);
-            let is_root = match item {
+            let is_root = match &rec.item {
                 InkItem::Image(_) => true,
                 InkItem::Stroke(s) => {
                     if let Some(pid) = s.parent_id {
@@ -400,28 +402,61 @@ impl InkSession {
             }
         }
 
-        let layer_id = self.doc.active_layer_id;
+        let mut items_by_target_layer: std::collections::HashMap<
+            LayerId,
+            Vec<(usize, usize, InkItem)>,
+        > = std::collections::HashMap::new();
+
+        for rec in pasted_records {
+            let target_layer_id = if self
+                .doc
+                .runtime
+                .layer_pos
+                .contains_key(&rec.source_layer_id)
+            {
+                rec.source_layer_id
+            } else {
+                self.doc.active_layer_id
+            };
+            items_by_target_layer
+                .entry(target_layer_id)
+                .or_default()
+                .push((rec.source_layer_rank, rec.source_idx, rec.item));
+        }
+
         let mut tx = InkTx::new("paste");
         for asset in assets_to_add {
             tx = tx.push(InkOp::AddAsset { asset });
         }
 
-        let active_len = self.doc.active_layer().map(|l| l.items.len()).unwrap_or(0);
-        let items_to_add: Vec<(usize, InkItem)> = pasted_items_with_idx
-            .into_iter()
-            .enumerate()
-            .map(|(i, (_, item))| (active_len + i, item))
-            .collect();
+        for (target_layer_id, sorted_items) in items_by_target_layer {
+            let current_len = self
+                .doc
+                .layers
+                .iter()
+                .find(|l| l.id == target_layer_id)
+                .map(|l| l.items.len())
+                .unwrap_or(0);
 
-        tx = tx.push(InkOp::AddItems {
-            layer_id,
-            items: items_to_add,
-        });
+            let mut items_vec = sorted_items;
+            items_vec.sort_by_key(|(rank, idx, _)| (*rank, *idx));
+
+            let items_to_add: Vec<(usize, InkItem)> = items_vec
+                .into_iter()
+                .enumerate()
+                .map(|(i, (_, _, item))| (current_len + i, item))
+                .collect();
+
+            tx = tx.push(InkOp::AddItems {
+                layer_id: target_layer_id,
+                items: items_to_add,
+            });
+        }
 
         self.do_tx(tx);
 
         self.doc.clear_sel();
-        self.doc.runtime.sel_items = pasted_roots.clone();
+        self.doc.runtime.sel_items = pasted_roots;
 
         all_pasted_ids
     }

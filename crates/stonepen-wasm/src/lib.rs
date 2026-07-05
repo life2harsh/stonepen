@@ -131,11 +131,11 @@ impl WasmApp {
         self.inner.action_load(json);
     }
 
-    pub fn action_export_svg(&self) {
+    pub fn action_export_svg(&mut self) {
         self.inner.action_export_svg();
     }
 
-    pub fn action_export_png(&self) {
+    pub fn action_export_png(&mut self) {
         self.inner.action_export_png();
     }
 

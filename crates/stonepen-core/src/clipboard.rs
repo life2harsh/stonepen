@@ -7,31 +7,35 @@ use crate::item::{ImageAsset, InkItem};
 use crate::point::Point2;
 use crate::xform::Xform2D;
 
+/// A copied item with its original position/layer context.
+#[derive(Debug, Clone)]
+pub struct ClipboardItemRecord {
+    pub source_layer_id: LayerId,
+    pub source_layer_rank: usize,
+    pub source_idx: usize,
+    pub item: InkItem,
+}
+
 /// A copied bundle of items and required assets.
 #[derive(Debug, Clone)]
 pub struct ClipboardBundle {
-    /// Source layer (paste targets the same layer if possible).
-    pub layer_id: LayerId,
-    /// Items in their original draw order. Index = original position within layer.
-    pub items: Vec<(usize, InkItem)>,
-    /// Image assets required by any copied image items.
+    pub records: Vec<ClipboardItemRecord>,
     pub assets: Vec<ImageAsset>,
-    /// Top-left world position of the selection bounds (for relative offset on paste).
     pub source_origin: Point2,
 }
 
 impl ClipboardBundle {
     /// Whether the bundle contains any items.
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        self.records.is_empty()
     }
 
     /// Collect all required asset IDs referenced in this bundle.
     pub fn required_asset_ids(&self) -> Vec<AssetId> {
-        self.items
+        self.records
             .iter()
-            .filter_map(|(_, item)| {
-                if let InkItem::Image(img) = item {
+            .filter_map(|rec| {
+                if let InkItem::Image(img) = &rec.item {
                     Some(img.asset_id)
                 } else {
                     None
@@ -43,37 +47,34 @@ impl ClipboardBundle {
     /// Build a paste clone of the bundle: assign fresh ItemIds, remap parent_ids,
     /// and apply a world-space translation offset.
     ///
-    /// Returns (new_items_per_layer, remapped_id_map)
+    /// Returns (new_records, remapped_id_map)
     pub fn build_paste_items(
         &self,
         offset: Xform2D,
     ) -> (
-        Vec<(usize, InkItem)>,
+        Vec<ClipboardItemRecord>,
         std::collections::HashMap<ItemId, ItemId>,
     ) {
-        let mut id_map: std::collections::HashMap<ItemId, ItemId> =
-            std::collections::HashMap::new();
+        let mut id_map = std::collections::HashMap::new();
 
         // First pass: assign new IDs for images (so strokes can remap parent_id)
-        for (_, item) in &self.items {
-            if let InkItem::Image(img) = item {
+        for rec in &self.records {
+            if let InkItem::Image(img) = &rec.item {
                 id_map.insert(img.id, ItemId::new());
             }
         }
 
         let mut result = Vec::new();
-        let mut base_idx = 0usize;
 
-        for (_orig_idx, item) in &self.items {
-            match item {
+        for rec in &self.records {
+            let pasted_item = match &rec.item {
                 InkItem::Image(img) => {
                     let new_id = *id_map.get(&img.id).unwrap();
                     let mut cloned = img.clone();
                     cloned.id = new_id;
                     cloned.xform = offset.concat(cloned.xform);
                     cloned.recompute_world_bbox();
-                    result.push((base_idx, InkItem::Image(cloned)));
-                    base_idx += 1;
+                    InkItem::Image(cloned)
                 }
                 InkItem::Stroke(s) => {
                     let new_stroke_id = ItemId::new();
@@ -87,20 +88,21 @@ impl ClipboardBundle {
                         } else {
                             // Parent not in bundle — detach (standalone stroke)
                             cloned.parent_id = None;
-                            // Bake the effective world transform into the stroke's xform
-                            // (world position is already in the stroke's points for
-                            //  standalone strokes; for parent-local strokes we keep
-                            //  the local-space points since we're detaching)
                             cloned.xform = offset.concat(cloned.xform);
                         }
                     } else {
                         cloned.xform = offset.concat(cloned.xform);
                     }
                     cloned.recompute_world_bbox();
-                    result.push((base_idx, InkItem::Stroke(cloned)));
-                    base_idx += 1;
+                    InkItem::Stroke(cloned)
                 }
-            }
+            };
+            result.push(ClipboardItemRecord {
+                source_layer_id: rec.source_layer_id,
+                source_layer_rank: rec.source_layer_rank,
+                source_idx: rec.source_idx,
+                item: pasted_item,
+            });
         }
 
         (result, id_map)

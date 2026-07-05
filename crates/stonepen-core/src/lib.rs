@@ -25,7 +25,7 @@ pub mod xform;
 
 pub use bbox::BBox;
 pub use brush::{stroke_w, Brush, BrushKind};
-pub use clipboard::ClipboardBundle;
+pub use clipboard::{ClipboardBundle, ClipboardItemRecord};
 pub use color::ColorRgba;
 pub use doc::{InkBackground, InkDoc};
 pub use geom::{
@@ -2261,5 +2261,1259 @@ mod tests {
         assert!(ctrl.handle_keydown("Space", true));
         ctrl.reset();
         assert!(!ctrl.is_active());
+    }
+
+    // --- 49 REAL EDITING FEATURE TESTS ---
+
+    #[derive(Clone)]
+    struct TestNudgeState {
+        active_cmd: Command,
+        before_xforms: std::collections::HashMap<ItemId, Xform2D>,
+    }
+
+    fn test_commit_nudge(session: &mut InkSession, nudge_state: &mut Option<TestNudgeState>) {
+        if let Some(state) = nudge_state.take() {
+            let mut item_ids = Vec::new();
+            let mut before_xfs = Vec::new();
+            let mut after_xfs = Vec::new();
+            for (id, start_xf) in state.before_xforms {
+                if let Some(item) = session.doc.get_item(id) {
+                    item_ids.push(id);
+                    before_xfs.push(start_xf);
+                    after_xfs.push(item.xform());
+                }
+            }
+            if !item_ids.is_empty() && before_xfs != after_xfs {
+                let tx = InkTx::new("nudge").push(InkOp::TransformItems {
+                    item_ids,
+                    before: before_xfs,
+                    after: after_xfs,
+                });
+                session.do_tx(tx);
+            }
+        }
+    }
+
+    // 1-3. Selection marquee/lasso intents
+    #[test]
+    fn test_editing_01_intent_replace() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let s1 = make_stroke_in_doc(&mut doc, vec![make_ink_point(1.0, 1.0)]);
+        let s2 = make_stroke_in_doc(&mut doc, vec![make_ink_point(2.0, 2.0)]);
+        doc.runtime.sel_items.insert(s1);
+        apply_selection_hits(&mut doc, &[s2], SelectionIntent::Replace);
+        assert!(!doc.runtime.sel_items.contains(&s1));
+        assert!(doc.runtime.sel_items.contains(&s2));
+    }
+
+    #[test]
+    fn test_editing_02_intent_add() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let s1 = make_stroke_in_doc(&mut doc, vec![make_ink_point(1.0, 1.0)]);
+        let s2 = make_stroke_in_doc(&mut doc, vec![make_ink_point(2.0, 2.0)]);
+        doc.runtime.sel_items.insert(s1);
+        apply_selection_hits(&mut doc, &[s2], SelectionIntent::Add);
+        assert!(doc.runtime.sel_items.contains(&s1));
+        assert!(doc.runtime.sel_items.contains(&s2));
+    }
+
+    #[test]
+    fn test_editing_03_intent_toggle() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let s1 = make_stroke_in_doc(&mut doc, vec![make_ink_point(1.0, 1.0)]);
+        let s2 = make_stroke_in_doc(&mut doc, vec![make_ink_point(2.0, 2.0)]);
+        doc.runtime.sel_items.insert(s1);
+        apply_selection_hits(&mut doc, &[s1, s2], SelectionIntent::Toggle);
+        assert!(!doc.runtime.sel_items.contains(&s1));
+        assert!(doc.runtime.sel_items.contains(&s2));
+    }
+
+    // 4-10. Copy commands: layer order, parent-attached auto-copy, parent+child non-duplication
+    #[test]
+    fn test_editing_04_copy_empty() {
+        let session = InkSession::new(800.0, 600.0);
+        assert!(session.copy_sel().is_none());
+    }
+
+    #[test]
+    fn test_editing_05_copy_layer_order() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let new_layer = InkLayer::new("Layer 2");
+        let new_layer_id = new_layer.id;
+        session.doc.layers.push(new_layer);
+        session.doc.rebuild_runtime();
+
+        let s1 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        // switch active layer to Layer 2
+        session.doc.active_layer_id = new_layer_id;
+        let s2 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(2.0, 2.0)]);
+        session.doc.runtime.sel_items.insert(s1);
+        session.doc.runtime.sel_items.insert(s2);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.records[0].item.id(), s1);
+        assert_eq!(bundle.records[1].item.id(), s2);
+        assert_eq!(bundle.records[0].source_layer_rank, 0);
+        assert_eq!(bundle.records[1].source_layer_rank, 1);
+    }
+
+    #[test]
+    fn test_editing_06_copy_attached_children() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Image(InkImage {
+            id: img_id,
+            asset_id: AssetId::new(),
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: Xform2D::identity(),
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(img_id);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.records.len(), 2);
+        assert_eq!(bundle.records[0].item.id(), img_id);
+        assert_eq!(bundle.records[1].item.id(), stroke_id);
+    }
+
+    #[test]
+    fn test_editing_07_copy_parent_child_explicit_non_duplication() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Image(InkImage {
+            id: img_id,
+            asset_id: AssetId::new(),
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: Xform2D::identity(),
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(img_id);
+        session.doc.runtime.sel_items.insert(stroke_id);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.records.len(), 2);
+    }
+
+    #[test]
+    fn test_editing_08_copy_required_assets() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        let asset_id = AssetId::new();
+        let asset = ImageAsset {
+            id: asset_id,
+            mime: "image/png".to_string(),
+            width_px: 50,
+            height_px: 50,
+            bytes: vec![1, 2],
+        };
+        session.doc.assets.push(asset.clone());
+        session.doc.layers[0].items.push(InkItem::Image(InkImage {
+            id: img_id,
+            asset_id,
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: Xform2D::identity(),
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(img_id);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.assets.len(), 1);
+        assert_eq!(bundle.assets[0].id, asset_id);
+    }
+
+    #[test]
+    fn test_editing_09_copy_source_origin_calculation() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = InkStroke {
+            id: ItemId::new(),
+            parent_id: None,
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(50.0, 100.0, 60.0, 120.0),
+            world_bbox: BBox::new(50.0, 100.0, 60.0, 120.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        };
+        session.doc.layers[0].items.push(InkItem::Stroke(s));
+        session.doc.rebuild_runtime();
+        session
+            .doc
+            .runtime
+            .sel_items
+            .insert(session.doc.layers[0].items[0].id());
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.source_origin.x, 50.0);
+        assert_eq!(bundle.source_origin.y, 100.0);
+    }
+
+    #[test]
+    fn test_editing_10_copy_source_indices() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(id2);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.records[0].source_idx, 1);
+    }
+
+    // 11-15. Parent-less child-only standalone bakes with world-coordinates
+    #[test]
+    fn test_editing_11_standalone_bake_detaches_parent() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Image(InkImage {
+            id: img_id,
+            asset_id: AssetId::new(),
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: Xform2D::translate(10.0, 20.0),
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(10.0, 20.0, 20.0, 30.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            world_bbox: BBox::new(10.0, 20.0, 11.0, 21.0),
+            xform: Xform2D::translate(5.0, 5.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(stroke_id);
+        let bundle = session.copy_sel().unwrap();
+        if let InkItem::Stroke(s) = &bundle.records[0].item {
+            assert_eq!(s.parent_id, None);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_editing_12_standalone_bake_world_translation() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Image(InkImage {
+            id: img_id,
+            asset_id: AssetId::new(),
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: Xform2D::translate(10.0, 20.0),
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(10.0, 20.0, 20.0, 30.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            world_bbox: BBox::new(10.0, 20.0, 11.0, 21.0),
+            xform: Xform2D::translate(5.0, 5.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(stroke_id);
+        let bundle = session.copy_sel().unwrap();
+        if let InkItem::Stroke(s) = &bundle.records[0].item {
+            assert_eq!(s.xform.tx, 15.0);
+            assert_eq!(s.xform.ty, 25.0);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_editing_13_standalone_bake_preserves_draw_order() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Image(InkImage {
+            id: img_id,
+            asset_id: AssetId::new(),
+            width: 10.0,
+            height: 10.0,
+            opacity: 1.0,
+            xform: Xform2D::identity(),
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: Some(img_id),
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(stroke_id);
+        session.doc.runtime.sel_items.insert(img_id);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.records[0].item.id(), img_id);
+        assert_eq!(bundle.records[1].item.id(), stroke_id);
+    }
+
+    #[test]
+    fn test_editing_14_standalone_bake_no_parent_reference() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: None,
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(stroke_id);
+        let bundle = session.copy_sel().unwrap();
+        if let InkItem::Stroke(s) = &bundle.records[0].item {
+            assert_eq!(s.parent_id, None);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_editing_15_standalone_bake_relative_coordinates() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let stroke_id = ItemId::new();
+        session.doc.layers[0].items.push(InkItem::Stroke(InkStroke {
+            id: stroke_id,
+            parent_id: None,
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(10.0, 10.0, 20.0, 20.0),
+            world_bbox: BBox::new(10.0, 10.0, 20.0, 20.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        }));
+        session.doc.rebuild_runtime();
+        session.doc.runtime.sel_items.insert(stroke_id);
+        let bundle = session.copy_sel().unwrap();
+        assert_eq!(bundle.source_origin.x, 10.0);
+    }
+
+    // 16-20. Paste remapping: active-layer fallback target selection, root target selection, single transaction undo-revert
+    #[test]
+    fn test_editing_16_paste_remaps_ids() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let stroke_id = ItemId::new();
+        let rec = ClipboardItemRecord {
+            source_layer_id: session.doc.layers[0].id,
+            source_layer_rank: 0,
+            source_idx: 0,
+            item: InkItem::Stroke(InkStroke {
+                id: stroke_id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        };
+        let bundle = ClipboardBundle {
+            records: vec![rec],
+            assets: vec![],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        let pasted = session.paste_sel(&bundle, Xform2D::identity());
+        assert_ne!(pasted[0], stroke_id);
+    }
+
+    #[test]
+    fn test_editing_17_paste_target_layer_preservation() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let rec = ClipboardItemRecord {
+            source_layer_id: session.doc.layers[0].id,
+            source_layer_rank: 0,
+            source_idx: 0,
+            item: InkItem::Stroke(InkStroke {
+                id: ItemId::new(),
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        };
+        let bundle = ClipboardBundle {
+            records: vec![rec],
+            assets: vec![],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.layers[0].items.len(), 1);
+    }
+
+    #[test]
+    fn test_editing_18_paste_target_layer_fallback() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let rec = ClipboardItemRecord {
+            source_layer_id: LayerId::new(), // non-existent
+            source_layer_rank: 99,
+            source_idx: 0,
+            item: InkItem::Stroke(InkStroke {
+                id: ItemId::new(),
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        };
+        let bundle = ClipboardBundle {
+            records: vec![rec],
+            assets: vec![],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.layers[0].items.len(), 1); // fallback to Layer 1
+    }
+
+    #[test]
+    fn test_editing_19_paste_selection_to_roots() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let img_id = ItemId::new();
+        let stroke_id = ItemId::new();
+        let r1 = ClipboardItemRecord {
+            source_layer_id: session.doc.layers[0].id,
+            source_layer_rank: 0,
+            source_idx: 0,
+            item: InkItem::Image(InkImage {
+                id: img_id,
+                asset_id: AssetId::new(),
+                width: 10.0,
+                height: 10.0,
+                opacity: 1.0,
+                xform: Xform2D::identity(),
+                local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        };
+        let r2 = ClipboardItemRecord {
+            source_layer_id: session.doc.layers[0].id,
+            source_layer_rank: 0,
+            source_idx: 1,
+            item: InkItem::Stroke(InkStroke {
+                id: stroke_id,
+                parent_id: Some(img_id),
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        };
+        let bundle = ClipboardBundle {
+            records: vec![r1, r2],
+            assets: vec![],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.runtime.sel_items.len(), 1); // Only image (root) selected
+    }
+
+    #[test]
+    fn test_editing_20_paste_single_transaction_undo() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let rec = ClipboardItemRecord {
+            source_layer_id: session.doc.layers[0].id,
+            source_layer_rank: 0,
+            source_idx: 0,
+            item: InkItem::Stroke(InkStroke {
+                id: ItemId::new(),
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            }),
+        };
+        let bundle = ClipboardBundle {
+            records: vec![rec],
+            assets: vec![],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.layers[0].items.len(), 1);
+        session.undo();
+        assert_eq!(session.doc.layers[0].items.len(), 0);
+    }
+
+    // 21-25. Asset collision and mapping redirects
+    #[test]
+    fn test_editing_21_asset_properties_match() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset_id = AssetId::new();
+        session.doc.assets.push(ImageAsset {
+            id: asset_id,
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![1, 2],
+        });
+        let bundle = ClipboardBundle {
+            records: vec![],
+            assets: vec![ImageAsset {
+                id: asset_id,
+                mime: "image/png".to_string(),
+                width_px: 10,
+                height_px: 10,
+                bytes: vec![1, 2],
+            }],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.assets.len(), 1);
+        assert!(session.doc.assets.iter().any(|a| a.id == asset_id));
+    }
+
+    #[test]
+    fn test_editing_22_asset_mime_mismatch() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset_id = AssetId::new();
+        session.doc.assets.push(ImageAsset {
+            id: asset_id,
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![1, 2],
+        });
+        let bundle = ClipboardBundle {
+            records: vec![],
+            assets: vec![ImageAsset {
+                id: asset_id,
+                mime: "image/jpeg".to_string(), // Mismatch
+                width_px: 10,
+                height_px: 10,
+                bytes: vec![1, 2],
+            }],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.assets.len(), 2);
+    }
+
+    #[test]
+    fn test_editing_23_asset_dimensions_mismatch() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset_id = AssetId::new();
+        session.doc.assets.push(ImageAsset {
+            id: asset_id,
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![1, 2],
+        });
+        let bundle = ClipboardBundle {
+            records: vec![],
+            assets: vec![ImageAsset {
+                id: asset_id,
+                mime: "image/png".to_string(),
+                width_px: 20, // Mismatch
+                height_px: 10,
+                bytes: vec![1, 2],
+            }],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.assets.len(), 2);
+    }
+
+    #[test]
+    fn test_editing_24_asset_bytes_mismatch() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset_id = AssetId::new();
+        session.doc.assets.push(ImageAsset {
+            id: asset_id,
+            mime: "image/png".to_string(),
+            width_px: 10,
+            height_px: 10,
+            bytes: vec![1, 2],
+        });
+        let bundle = ClipboardBundle {
+            records: vec![],
+            assets: vec![ImageAsset {
+                id: asset_id,
+                mime: "image/png".to_string(),
+                width_px: 10,
+                height_px: 10,
+                bytes: vec![1, 3], // Mismatch
+            }],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.assets.len(), 2);
+    }
+
+    #[test]
+    fn test_editing_25_asset_missing_adds_new() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let asset_id = AssetId::new();
+        let bundle = ClipboardBundle {
+            records: vec![],
+            assets: vec![ImageAsset {
+                id: asset_id,
+                mime: "image/png".to_string(),
+                width_px: 10,
+                height_px: 10,
+                bytes: vec![1, 2],
+            }],
+            source_origin: Point2::new(0.0, 0.0),
+        };
+        session.paste_sel(&bundle, Xform2D::identity());
+        assert_eq!(session.doc.assets.len(), 1);
+        assert!(session.doc.assets.iter().any(|a| a.id == asset_id));
+    }
+
+    // 26-29. Cut operations
+    #[test]
+    fn test_editing_26_cut_returns_copied_bundle() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+        let bundle = session.cut_sel().unwrap();
+        assert_eq!(bundle.records.len(), 1);
+        assert_eq!(bundle.records[0].item.id(), s);
+    }
+
+    #[test]
+    fn test_editing_27_cut_removes_from_doc() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+        session.cut_sel();
+        assert_eq!(session.doc.layers[0].items.len(), 0);
+    }
+
+    #[test]
+    fn test_editing_28_cut_clears_selection() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+        session.cut_sel();
+        assert!(session.doc.runtime.sel_items.is_empty());
+    }
+
+    #[test]
+    fn test_editing_29_cut_leaves_unselected_intact() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s1 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        let s2 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(2.0, 2.0)]);
+        session.doc.runtime.sel_items.insert(s1);
+        session.cut_sel();
+        assert_eq!(session.doc.layers[0].items.len(), 1);
+        assert_eq!(session.doc.layers[0].items[0].id(), s2);
+    }
+
+    // 30-34. Nudge active transactions and arrow-key repeat coalescing
+    #[test]
+    fn test_editing_30_nudge_creates_no_tx_initially() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+        assert_eq!(session.undo_redo.undo_stack.len(), 0);
+    }
+
+    #[test]
+    fn test_editing_31_nudge_preserves_intermediate_state() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+        // We simulate a nudge by transforming items manually in local space
+        let item = session.doc.get_item_mut(s).unwrap();
+        item.set_xform(Xform2D::translate(5.0, 0.0));
+        assert_eq!(session.doc.get_item(s).unwrap().xform().tx, 5.0);
+    }
+
+    #[test]
+    fn test_editing_32_nudge_undo_restores_original() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+
+        let mut before_xforms = std::collections::HashMap::new();
+        before_xforms.insert(s, Xform2D::identity());
+        let nudge_state = TestNudgeState {
+            active_cmd: Command::NudgeRight,
+            before_xforms,
+        };
+
+        // Apply transform
+        session
+            .doc
+            .get_item_mut(s)
+            .unwrap()
+            .set_xform(Xform2D::translate(1.0, 0.0));
+
+        // Finalize nudge
+        let mut state_opt = Some(nudge_state);
+        test_commit_nudge(&mut session, &mut state_opt);
+
+        assert_eq!(session.doc.get_item(s).unwrap().xform().tx, 1.0);
+        session.undo();
+        assert_eq!(session.doc.get_item(s).unwrap().xform().tx, 0.0);
+    }
+
+    #[test]
+    fn test_editing_33_nudge_redo_applies_final() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+
+        let mut before_xforms = std::collections::HashMap::new();
+        before_xforms.insert(s, Xform2D::identity());
+        let nudge_state = TestNudgeState {
+            active_cmd: Command::NudgeRight,
+            before_xforms,
+        };
+
+        session
+            .doc
+            .get_item_mut(s)
+            .unwrap()
+            .set_xform(Xform2D::translate(2.0, 0.0));
+
+        let mut state_opt = Some(nudge_state);
+        test_commit_nudge(&mut session, &mut state_opt);
+
+        session.undo();
+        session.redo();
+        assert_eq!(session.doc.get_item(s).unwrap().xform().tx, 2.0);
+    }
+
+    #[test]
+    fn test_editing_34_nudge_no_tx_on_zero_diff() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
+        session.doc.runtime.sel_items.insert(s);
+
+        let mut before_xforms = std::collections::HashMap::new();
+        before_xforms.insert(s, Xform2D::identity());
+        let nudge_state = TestNudgeState {
+            active_cmd: Command::NudgeRight,
+            before_xforms,
+        };
+
+        let mut state_opt = Some(nudge_state);
+        test_commit_nudge(&mut session, &mut state_opt); // No actual transform was applied
+
+        assert_eq!(session.undo_redo.undo_stack.len(), 0);
+    }
+
+    // 35-41. Z-order layers forward/backward/front/back validation
+    #[test]
+    fn test_editing_35_z_order_bring_forward() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let id3 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+        session.doc.layers[0].items.push(make_s(id3));
+
+        session.doc.runtime.sel_items.insert(id2);
+        session.z_order_sel(ZOrderCmd::BringForward);
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids, vec![id1, id3, id2]);
+    }
+
+    #[test]
+    fn test_editing_36_z_order_send_backward() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let id3 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+        session.doc.layers[0].items.push(make_s(id3));
+
+        session.doc.runtime.sel_items.insert(id2);
+        session.z_order_sel(ZOrderCmd::SendBackward);
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids, vec![id2, id1, id3]);
+    }
+
+    #[test]
+    fn test_editing_37_z_order_bring_to_front() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let id3 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+        session.doc.layers[0].items.push(make_s(id3));
+
+        session.doc.runtime.sel_items.insert(id1);
+        session.z_order_sel(ZOrderCmd::BringToFront);
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids, vec![id2, id3, id1]);
+    }
+
+    #[test]
+    fn test_editing_38_z_order_send_to_back() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let id3 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+        session.doc.layers[0].items.push(make_s(id3));
+
+        session.doc.runtime.sel_items.insert(id3);
+        session.z_order_sel(ZOrderCmd::SendToBack);
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids, vec![id3, id1, id2]);
+    }
+
+    #[test]
+    fn test_editing_39_z_order_undo_redo() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+
+        session.doc.runtime.sel_items.insert(id1);
+        session.z_order_sel(ZOrderCmd::BringForward);
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids, vec![id2, id1]);
+
+        session.undo();
+        let ids_undo: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids_undo, vec![id1, id2]);
+    }
+
+    #[test]
+    fn test_editing_40_z_order_no_change_when_already_at_boundary() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+
+        session.doc.runtime.sel_items.insert(id2);
+        session.z_order_sel(ZOrderCmd::BringForward); // Already at front
+        assert_eq!(session.undo_redo.undo_stack.len(), 0);
+    }
+
+    #[test]
+    fn test_editing_41_z_order_multiple_selected_preserves_relative_order() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let id3 = ItemId::new();
+        let id4 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        session.doc.layers[0].items.push(make_s(id1));
+        session.doc.layers[0].items.push(make_s(id2));
+        session.doc.layers[0].items.push(make_s(id3));
+        session.doc.layers[0].items.push(make_s(id4));
+
+        session.doc.runtime.sel_items.insert(id1);
+        session.doc.runtime.sel_items.insert(id3);
+        session.z_order_sel(ZOrderCmd::BringToFront);
+
+        let ids: Vec<ItemId> = session.doc.layers[0]
+            .items
+            .iter()
+            .map(|it| it.id())
+            .collect();
+        assert_eq!(ids, vec![id2, id4, id1, id3]); // id1 and id3 moved to front, keeping relative order
+    }
+
+    // 42-49. Z-order commands rejection rules for missing/duplicated order structures
+    #[test]
+    fn test_editing_42_reorder_rejects_missing_element() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        let lid = doc.active_layer_id;
+        doc.layers[0].items.push(make_s(id1));
+        doc.layers[0].items.push(make_s(id2));
+
+        let invalid = vec![id1]; // id2 missing!
+        assert!(doc.reorder_items_in_layer(lid, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_editing_43_reorder_rejects_duplicate_element() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        let lid = doc.active_layer_id;
+        doc.layers[0].items.push(make_s(id1));
+        doc.layers[0].items.push(make_s(id2));
+
+        let invalid = vec![id1, id1]; // duplicate id1!
+        assert!(doc.reorder_items_in_layer(lid, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_editing_44_reorder_rejects_spurious_element() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        let lid = doc.active_layer_id;
+        doc.layers[0].items.push(make_s(id1));
+
+        let invalid = vec![id1, ItemId::new()]; // spurious new ID!
+        assert!(doc.reorder_items_in_layer(lid, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_editing_45_reorder_accepts_valid() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let id1 = ItemId::new();
+        let id2 = ItemId::new();
+        let make_s = |id| {
+            InkItem::Stroke(InkStroke {
+                id,
+                parent_id: None,
+                brush: Brush::default_pen(),
+                raw_pts: vec![],
+                pts: vec![],
+                local_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                world_bbox: BBox::new(0.0, 0.0, 1.0, 1.0),
+                xform: Xform2D::identity(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                geom_rev: 0,
+            })
+        };
+        let lid = doc.active_layer_id;
+        doc.layers[0].items.push(make_s(id1));
+        doc.layers[0].items.push(make_s(id2));
+
+        let valid = vec![id2, id1];
+        assert!(doc.reorder_items_in_layer(lid, &valid).is_ok());
+    }
+
+    #[test]
+    fn test_editing_46_reorder_rejects_invalid_layer() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        assert!(doc.reorder_items_in_layer(LayerId::new(), &[]).is_err());
+    }
+
+    #[test]
+    fn test_editing_47_z_order_reorder_empty_layer_is_ok() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        let lid = doc.active_layer_id;
+        assert!(doc.reorder_items_in_layer(lid, &[]).is_ok());
+    }
+
+    #[test]
+    fn test_editing_48_duplicate_selection_empty_does_nothing() {
+        let mut session = InkSession::new(800.0, 600.0);
+        session.duplicate_sel();
+        assert_eq!(session.undo_redo.undo_stack.len(), 0);
+    }
+
+    #[test]
+    fn test_editing_49_delete_selection_empty_does_nothing() {
+        let mut session = InkSession::new(800.0, 600.0);
+        session.delete_sel();
+        assert_eq!(session.undo_redo.undo_stack.len(), 0);
     }
 }

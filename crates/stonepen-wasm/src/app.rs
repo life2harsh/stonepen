@@ -174,6 +174,7 @@ impl StonepenApp {
     }
 
     pub fn on_pointer_down(&mut self, e: &PointerEvent) {
+        self.commit_nudge();
         e.prevent_default();
         let pi = PointerInput::from_event(e, &self.canvas);
         match self.effective_tool() {
@@ -293,31 +294,42 @@ impl StonepenApp {
                     SelHit::None => {
                         let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
                         if let Some(id) = clicked {
+                            let is_selected = self.session.doc.runtime.sel_items.contains(&id);
                             if e.shift_key() {
                                 // Toggle item selection
-                                if self.session.doc.runtime.sel_items.contains(&id) {
-                                    self.session.doc.runtime.sel_items.remove(&id);
+                                stonepen_core::apply_selection_hits(
+                                    &mut self.session.doc,
+                                    &[id],
+                                    SelectionIntent::Toggle,
+                                );
+                                if is_selected {
+                                    // Shift-click selected item: remove it and do NOT start moving
+                                    self.update_cursor("default");
+                                    self.input = InputState::Idle;
                                 } else {
-                                    self.session.doc.runtime.sel_items.insert(id);
-                                }
-                                let roots = self.session.doc.transform_roots();
-                                let before = roots
-                                    .iter()
-                                    .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
-                                    .collect();
-                                self.update_cursor("grabbing");
-                                self.input = InputState::MovingSel {
-                                    ptr_id: pi.id,
-                                    start_world,
-                                    before,
-                                };
-                            } else {
-                                if self.session.doc.runtime.sel_items.contains(&id) {
+                                    // Shift-click unselected item: add it and start moving
                                     let roots = self.session.doc.transform_roots();
                                     let before = roots
                                         .iter()
-                                        .map(|&id| {
-                                            (id, self.session.doc.get_item(id).unwrap().xform())
+                                        .map(|&rid| {
+                                            (rid, self.session.doc.get_item(rid).unwrap().xform())
+                                        })
+                                        .collect();
+                                    self.update_cursor("grabbing");
+                                    self.input = InputState::MovingSel {
+                                        ptr_id: pi.id,
+                                        start_world,
+                                        before,
+                                    };
+                                }
+                            } else {
+                                if is_selected {
+                                    // plain click already-selected item: preserve selection and start moving
+                                    let roots = self.session.doc.transform_roots();
+                                    let before = roots
+                                        .iter()
+                                        .map(|&rid| {
+                                            (rid, self.session.doc.get_item(rid).unwrap().xform())
                                         })
                                         .collect();
                                     self.update_cursor("grabbing");
@@ -327,10 +339,19 @@ impl StonepenApp {
                                         before,
                                     };
                                 } else {
-                                    self.session.doc.clear_sel();
-                                    self.session.doc.runtime.sel_items.insert(id);
-                                    let before =
-                                        vec![(id, self.session.doc.get_item(id).unwrap().xform())];
+                                    // plain click unselected item: replace selection and start moving
+                                    stonepen_core::apply_selection_hits(
+                                        &mut self.session.doc,
+                                        &[id],
+                                        SelectionIntent::Replace,
+                                    );
+                                    let roots = self.session.doc.transform_roots();
+                                    let before = roots
+                                        .iter()
+                                        .map(|&rid| {
+                                            (rid, self.session.doc.get_item(rid).unwrap().xform())
+                                        })
+                                        .collect();
                                     self.update_cursor("grabbing");
                                     self.input = InputState::MovingSel {
                                         ptr_id: pi.id,
@@ -380,7 +401,6 @@ impl StonepenApp {
                         SelHandle::TopRight | SelHandle::BottomLeft => {
                             self.update_cursor("nesw-resize")
                         }
-                        _ => self.update_cursor("default"),
                     },
                     SelHit::None => self.update_cursor("default"),
                 }
@@ -709,6 +729,7 @@ impl StonepenApp {
     }
 
     pub fn on_wheel(&mut self, e: &WheelEvent) {
+        self.commit_nudge();
         e.prevent_default();
         let cx = e.client_x() as f32;
         let cy = e.client_y() as f32;
@@ -771,7 +792,16 @@ impl StonepenApp {
             if e.repeat() && !cmd.allows_repeat() {
                 return;
             }
-            e.prevent_default();
+            let is_native_paste = cmd == Command::Paste
+                && chord.code == "KeyV"
+                && chord.primary
+                && !chord.shift
+                && !chord.alt;
+
+            if !is_native_paste {
+                e.prevent_default();
+            }
+
             if cmd == Command::HoldPan {
                 let is_idle = matches!(self.input, InputState::Idle);
                 if self.temp_pan.handle_keydown(&chord.code, is_idle) {
@@ -790,7 +820,9 @@ impl StonepenApp {
                     || cmd == Command::Redo
                     || cmd == Command::ClearSelection
                 {
-                    self.dispatch_command(cmd);
+                    if !is_native_paste {
+                        self.dispatch_command(cmd);
+                    }
                 }
             }
         }
@@ -1042,24 +1074,28 @@ impl StonepenApp {
     }
 
     pub fn action_undo(&mut self) {
+        self.commit_nudge();
         self.session.undo();
         self.update_status();
         self.redraw();
     }
 
     pub fn action_redo(&mut self) {
+        self.commit_nudge();
         self.session.redo();
         self.update_status();
         self.redraw();
     }
 
     pub fn action_clear(&mut self) {
+        self.commit_nudge();
         self.session.clear_active_layer();
         self.update_status();
         self.redraw();
     }
 
     pub fn action_save(&mut self) {
+        self.commit_nudge();
         match self.session.export_json() {
             Ok(json) => {
                 let _ = trigger_download("drawing.stonepen.json", &json, "application/json");
@@ -1072,16 +1108,44 @@ impl StonepenApp {
     }
 
     pub fn action_load(&mut self, json: &str) {
-        let old_tool = self.session.active_tool.clone();
-        let old_brush = self.session.active_brush.clone();
         match InkSession::import_json(json) {
-            Ok(mut s) => {
-                s.active_tool = old_tool;
-                s.active_brush = old_brush;
-                self.session = s;
-                self.reset_trans_state();
+            Ok(mut new_session) => {
+                self.reset_transient_input();
+                self.nudge_state = None;
+                self.input = InputState::Idle;
+                self.preview_pts.clear();
+                self.lasso_preview.clear();
+                self.temp_pan.reset();
+                self.capture_command = None;
+
+                let old_tool = self.session.active_tool.clone();
+                let old_brush = self.session.active_brush.clone();
+                new_session.active_tool = old_tool;
+                new_session.active_brush = old_brush;
+                self.session = new_session;
+
+                let tool_name = match self.session.active_tool {
+                    Tool::Pen => "pen",
+                    Tool::Pencil => "pencil",
+                    Tool::Highlighter => "highlighter",
+                    Tool::StrokeEraser => "eraser",
+                    Tool::Lasso => "lasso",
+                    Tool::Select => "select",
+                    Tool::Pan => "pan",
+                };
+                self.sync_tool_ui(tool_name);
+                self.sync_brush_controls();
+
+                if let Ok(ui) = WebUi::new() {
+                    ui.sync_capture_overlay(self);
+                }
+
+                self.update_status();
+                self.redraw();
             }
-            Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!("{e}"))),
+            Err(e) => {
+                web_sys::console::error_1(&JsValue::from_str(&format!("{e}")));
+            }
         }
     }
 
@@ -1098,6 +1162,9 @@ impl StonepenApp {
         };
         self.sync_tool_ui(tool_name);
         self.sync_brush_controls();
+        if let Ok(ui) = WebUi::new() {
+            ui.sync_capture_overlay(self);
+        }
     }
 
     pub fn sync_brush_controls(&self) {
@@ -1106,7 +1173,8 @@ impl StonepenApp {
         }
     }
 
-    pub fn action_export_svg(&self) {
+    pub fn action_export_svg(&mut self) {
+        self.commit_nudge();
         match self.session.export_svg() {
             Ok(svg) => {
                 let _ = trigger_download("drawing.svg", &svg, "image/svg+xml");
@@ -1115,7 +1183,8 @@ impl StonepenApp {
         }
     }
 
-    pub fn action_export_png(&self) {
+    pub fn action_export_png(&mut self) {
+        self.commit_nudge();
         let _ = trigger_png_download(&self.canvas, "drawing.png");
     }
 
@@ -1239,10 +1308,10 @@ impl StonepenApp {
                 self.sync_tool_ui("pan");
             }
             Command::Undo => {
-                self.session.undo();
+                self.action_undo();
             }
             Command::Redo => {
-                self.session.redo();
+                self.action_redo();
             }
             Command::DeleteSelection => {
                 self.session.delete_sel();
@@ -1269,7 +1338,7 @@ impl StonepenApp {
             }
             Command::Copy => {
                 if let Some(bundle) = self.session.copy_sel() {
-                    let count = bundle.items.len();
+                    let count = bundle.records.len();
                     self.clipboard = Some(bundle);
                     self.paste_generation = 0;
                     self.status_msg = Some(format!("Copied {count} items"));
@@ -1277,7 +1346,7 @@ impl StonepenApp {
             }
             Command::Cut => {
                 if let Some(bundle) = self.session.cut_sel() {
-                    let count = bundle.items.len();
+                    let count = bundle.records.len();
                     self.clipboard = Some(bundle);
                     self.paste_generation = 0;
                     self.status_msg = Some(format!("Cut {count} items"));
@@ -1554,6 +1623,7 @@ impl StonepenApp {
     }
 
     pub fn paste_image(&mut self, bytes: &[u8], mime: &str, width_px: u32, height_px: u32) {
+        self.commit_nudge();
         let asset_id = AssetId::new();
         let asset = ImageAsset {
             id: asset_id,
