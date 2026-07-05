@@ -50,6 +50,12 @@ pub enum InkOp {
     DeleteAsset {
         asset: ImageAsset,
     },
+    /// Reorder items within one layer. Stores the full item-id order before and after.
+    ReorderItems {
+        layer_id: LayerId,
+        before_order: Vec<ItemId>,
+        after_order: Vec<ItemId>,
+    },
 }
 
 #[derive(Debug, Clone)]

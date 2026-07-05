@@ -147,38 +147,76 @@ impl WebUi {
 
         let is_mac = app.get_platform_is_mac();
 
-        // Groups mirror the original JS layout
+        let all_commands = [
+            Command::ToolPen,
+            Command::ToolPencil,
+            Command::ToolHighlighter,
+            Command::ToolEraser,
+            Command::ToolLasso,
+            Command::ToolSelect,
+            Command::ToolPan,
+            Command::Undo,
+            Command::Redo,
+            Command::DeleteSelection,
+            Command::DuplicateSelection,
+            Command::ClearSelection,
+            Command::SelectAll,
+            Command::Copy,
+            Command::Cut,
+            Command::Paste,
+            Command::NudgeLeft,
+            Command::NudgeRight,
+            Command::NudgeUp,
+            Command::NudgeDown,
+            Command::BringForward,
+            Command::SendBackward,
+            Command::BringToFront,
+            Command::SendToBack,
+            Command::HoldPan,
+        ];
+
         struct Group {
             name: &'static str,
-            commands: &'static [Command],
+            commands: Vec<Command>,
         }
+        let mut tools_group = Group {
+            name: "Tools",
+            commands: Vec::new(),
+        };
+        let mut history_group = Group {
+            name: "History",
+            commands: Vec::new(),
+        };
+        let mut selection_group = Group {
+            name: "Selection",
+            commands: Vec::new(),
+        };
+        let mut editing_group = Group {
+            name: "Editing",
+            commands: Vec::new(),
+        };
+        let mut navigation_group = Group {
+            name: "Navigation",
+            commands: Vec::new(),
+        };
+
+        for cmd in all_commands {
+            match cmd.group() {
+                "Tools" => tools_group.commands.push(cmd),
+                "History" => history_group.commands.push(cmd),
+                "Selection" => selection_group.commands.push(cmd),
+                "Editing" => editing_group.commands.push(cmd),
+                "Navigation" => navigation_group.commands.push(cmd),
+                _ => {}
+            }
+        }
+
         let groups = [
-            Group {
-                name: "Tools",
-                commands: &[
-                    Command::ToolPen,
-                    Command::ToolPencil,
-                    Command::ToolHighlighter,
-                    Command::ToolEraser,
-                    Command::ToolLasso,
-                    Command::ToolSelect,
-                    Command::ToolPan,
-                ],
-            },
-            Group {
-                name: "Actions",
-                commands: &[
-                    Command::Undo,
-                    Command::Redo,
-                    Command::DeleteSelection,
-                    Command::DuplicateSelection,
-                    Command::ClearSelection,
-                ],
-            },
-            Group {
-                name: "Navigation",
-                commands: &[Command::HoldPan],
-            },
+            tools_group,
+            history_group,
+            selection_group,
+            editing_group,
+            navigation_group,
         ];
 
         for group in &groups {
@@ -194,7 +232,7 @@ impl WebUi {
                 let _ = container.append_child(&h4);
             }
 
-            for &cmd in group.commands {
+            for &cmd in &group.commands {
                 let chords = app.settings.shortcuts.bindings(cmd);
                 if let Ok(row) = self.document.create_element("div") {
                     let _ = row.set_attribute("class", "shortcut-row");

@@ -1,5 +1,6 @@
 pub mod bbox;
 pub mod brush;
+pub mod clipboard;
 pub mod color;
 pub mod doc;
 pub mod export_json;
@@ -24,6 +25,7 @@ pub mod xform;
 
 pub use bbox::BBox;
 pub use brush::{stroke_w, Brush, BrushKind};
+pub use clipboard::ClipboardBundle;
 pub use color::ColorRgba;
 pub use doc::{InkBackground, InkDoc};
 pub use geom::{
@@ -35,8 +37,10 @@ pub use layer::InkLayer;
 pub use ops::{InkOp, InkTx, UndoRedo};
 pub use point::{InkPoint, Point2, PointerKind, Vec2};
 pub use runtime::InkRuntime;
-pub use sel::select_rect;
-pub use session::{InkError, InkSession, Tool};
+pub use sel::{
+    apply_selection_hits, lasso_query, lasso_select, rect_query, select_rect, SelectionIntent,
+};
+pub use session::{InkError, InkSession, Tool, ZOrderCmd};
 pub use shortcuts::{
     AppSettings, Command, ConflictError, KeyChord, ShortcutMap, TempPanController,
 };
@@ -2146,9 +2150,21 @@ mod tests {
             "tool_pan",
             "undo",
             "redo",
+            "select_all",
             "delete_selection",
             "duplicate_selection",
             "clear_selection",
+            "copy",
+            "cut",
+            "paste",
+            "nudge_left",
+            "nudge_right",
+            "nudge_up",
+            "nudge_down",
+            "bring_forward",
+            "send_backward",
+            "bring_to_front",
+            "send_to_back",
             "hold_pan",
         ];
         for id in &expected {
@@ -2160,9 +2176,9 @@ mod tests {
     #[test]
     fn test_shortcuts_stable_ordering() {
         // Command::ALL is the single source of truth for ordering
-        assert_eq!(Command::ALL.len(), 13);
+        assert_eq!(Command::ALL.len(), 25);
         assert_eq!(Command::ALL[0].to_id(), "tool_pen");
-        assert_eq!(Command::ALL[12].to_id(), "hold_pan");
+        assert_eq!(Command::ALL[24].to_id(), "hold_pan");
     }
 
     #[test]

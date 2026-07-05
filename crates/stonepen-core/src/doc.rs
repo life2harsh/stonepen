@@ -493,4 +493,66 @@ impl InkDoc {
         }
         best_id
     }
+
+    /// Reorder items within a single layer to match the given ID sequence.
+    /// The `new_order` must contain exactly the same set of ItemIds as the
+    /// current layer without duplicates or omissions.
+    pub fn reorder_items_in_layer(
+        &mut self,
+        layer_id: LayerId,
+        new_order: &[ItemId],
+    ) -> Result<(), crate::session::InkError> {
+        let li = match self.runtime.layer_pos.get(&layer_id) {
+            Some(&idx) => idx,
+            None => return Err(crate::session::InkError::LayerNotFound),
+        };
+        let layer = &self.layers[li];
+
+        // 1. Length check
+        if new_order.len() != layer.items.len() {
+            return Err(crate::session::InkError::InvalidReorder(format!(
+                "Length mismatch: new order has {}, layer has {}",
+                new_order.len(),
+                layer.items.len()
+            )));
+        }
+
+        // 2. Presence & duplicate check
+        let mut existing_ids = std::collections::HashSet::new();
+        for item in &layer.items {
+            existing_ids.insert(item.id());
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for id in new_order {
+            if !existing_ids.contains(id) {
+                return Err(crate::session::InkError::InvalidReorder(format!(
+                    "Item ID {} not found in target layer",
+                    id.0
+                )));
+            }
+            if !seen.insert(*id) {
+                return Err(crate::session::InkError::InvalidReorder(format!(
+                    "Duplicate Item ID {} in new order",
+                    id.0
+                )));
+            }
+        }
+
+        // Safe mutation phase
+        let mut id_to_item: std::collections::HashMap<ItemId, InkItem> = self.layers[li]
+            .items
+            .drain(..)
+            .map(|item| (item.id(), item))
+            .collect();
+
+        for &id in new_order {
+            if let Some(item) = id_to_item.remove(&id) {
+                self.layers[li].items.push(item);
+            }
+        }
+
+        self.rebuild_runtime();
+        Ok(())
+    }
 }

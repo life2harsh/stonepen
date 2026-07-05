@@ -1,11 +1,13 @@
+use std::collections::HashSet;
 use thiserror::Error;
 
 use crate::brush::Brush;
+use crate::clipboard::ClipboardBundle;
 use crate::doc::InkDoc;
 use crate::export_json;
 use crate::export_svg;
-use crate::ids::{ItemId, LayerId};
-use crate::item::InkItem;
+use crate::ids::{AssetId, ItemId, LayerId};
+use crate::item::{ImageAsset, InkItem};
 use crate::ops::{InkOp, InkTx, UndoRedo};
 use crate::point::Point2;
 use crate::stroke::InkStroke;
@@ -30,6 +32,8 @@ pub enum InkError {
     NoActiveLayer,
     #[error("layer not found")]
     LayerNotFound,
+    #[error("invalid reorder: {0}")]
+    InvalidReorder(String),
 }
 
 pub struct InkSession {
@@ -243,6 +247,295 @@ impl InkSession {
         self.doc.runtime.sel_items = new_sel;
     }
 
+    pub fn select_all(&mut self) {
+        self.doc.runtime.sel_items.clear();
+        for layer in &self.doc.layers {
+            for item in &layer.items {
+                self.doc.runtime.sel_items.insert(item.id());
+            }
+        }
+    }
+
+    pub fn copy_sel(&self) -> Option<ClipboardBundle> {
+        let sel = &self.doc.runtime.sel_items;
+        if sel.is_empty() {
+            return None;
+        }
+
+        let mut to_copy_ids = HashSet::new();
+        for &id in sel {
+            to_copy_ids.insert(id);
+            if let Some(InkItem::Image(img)) = self.doc.get_item(id) {
+                for kid in self.doc.attached_strokes(img.id) {
+                    to_copy_ids.insert(kid);
+                }
+            }
+        }
+
+        let mut copied_items = Vec::new();
+        let mut required_assets = Vec::new();
+
+        // Preserve original draw order by traversing layers and items in order
+        for layer in &self.doc.layers {
+            for (idx, item) in layer.items.iter().enumerate() {
+                if to_copy_ids.contains(&item.id()) {
+                    let mut cloned = item.clone();
+                    match &mut cloned {
+                        InkItem::Image(img) => {
+                            if let Some(asset) = self.doc.get_asset(img.asset_id) {
+                                if !required_assets
+                                    .iter()
+                                    .any(|a: &ImageAsset| a.id == asset.id)
+                                {
+                                    required_assets.push(asset.clone());
+                                }
+                            }
+                        }
+                        InkItem::Stroke(s) => {
+                            if let Some(pid) = s.parent_id {
+                                if !to_copy_ids.contains(&pid) {
+                                    // Child-only copy: make it standalone
+                                    s.parent_id = None;
+                                    s.xform = self.doc.effective_xform(s.id);
+                                    s.recompute_world_bbox();
+                                }
+                            }
+                        }
+                    }
+                    copied_items.push((idx, cloned));
+                }
+            }
+        }
+
+        let selection_bbox = self.doc.selection_bbox();
+        let source_origin = selection_bbox
+            .map(|b| Point2::new(b.min_x, b.min_y))
+            .unwrap_or_else(|| Point2::new(0.0, 0.0));
+        let layer_id = self.doc.active_layer_id;
+
+        Some(ClipboardBundle {
+            layer_id,
+            items: copied_items,
+            assets: required_assets,
+            source_origin,
+        })
+    }
+
+    pub fn cut_sel(&mut self) -> Option<ClipboardBundle> {
+        let bundle = self.copy_sel()?;
+        let sel: Vec<ItemId> = self.doc.runtime.sel_items.iter().copied().collect();
+        let removed = self.doc.delete_items(&sel);
+        self.doc.clear_sel();
+        let mut tx = InkTx::new("cut").push(InkOp::DeleteItems {
+            items: removed.clone(),
+        });
+        for (_, _, item) in &removed {
+            if let InkItem::Image(img) = item {
+                if !self.doc.has_asset_references(img.asset_id) {
+                    if let Some(asset) = self.doc.get_asset(img.asset_id) {
+                        tx = tx.push(InkOp::DeleteAsset {
+                            asset: asset.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        self.do_tx(tx);
+        Some(bundle)
+    }
+
+    pub fn paste_sel(&mut self, bundle: &ClipboardBundle, offset: Xform2D) -> Vec<ItemId> {
+        let mut asset_id_map = std::collections::HashMap::new();
+        let mut assets_to_add = Vec::new();
+
+        for asset in &bundle.assets {
+            if let Some(existing) = self.doc.get_asset(asset.id) {
+                let matches = existing.mime == asset.mime
+                    && existing.width_px == asset.width_px
+                    && existing.height_px == asset.height_px
+                    && existing.bytes == asset.bytes;
+                if matches {
+                    asset_id_map.insert(asset.id, asset.id);
+                } else {
+                    let new_id = AssetId::new();
+                    asset_id_map.insert(asset.id, new_id);
+                    let mut new_asset = asset.clone();
+                    new_asset.id = new_id;
+                    assets_to_add.push(new_asset);
+                }
+            } else {
+                asset_id_map.insert(asset.id, asset.id);
+                assets_to_add.push(asset.clone());
+            }
+        }
+
+        let (mut pasted_items_with_idx, id_map) = bundle.build_paste_items(offset);
+
+        // Remap asset IDs for any image items
+        for (_, item) in &mut pasted_items_with_idx {
+            if let InkItem::Image(img) = item {
+                if let Some(&new_aid) = asset_id_map.get(&img.asset_id) {
+                    img.asset_id = new_aid;
+                }
+            }
+        }
+
+        let mut pasted_roots = HashSet::new();
+        let mut all_pasted_ids = Vec::new();
+        for (_, item) in &pasted_items_with_idx {
+            let item_id = item.id();
+            all_pasted_ids.push(item_id);
+            let is_root = match item {
+                InkItem::Image(_) => true,
+                InkItem::Stroke(s) => {
+                    if let Some(pid) = s.parent_id {
+                        !id_map.values().any(|&new_id| new_id == pid)
+                    } else {
+                        true
+                    }
+                }
+            };
+            if is_root {
+                pasted_roots.insert(item_id);
+            }
+        }
+
+        let layer_id = self.doc.active_layer_id;
+        let mut tx = InkTx::new("paste");
+        for asset in assets_to_add {
+            tx = tx.push(InkOp::AddAsset { asset });
+        }
+
+        let active_len = self.doc.active_layer().map(|l| l.items.len()).unwrap_or(0);
+        let items_to_add: Vec<(usize, InkItem)> = pasted_items_with_idx
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, item))| (active_len + i, item))
+            .collect();
+
+        tx = tx.push(InkOp::AddItems {
+            layer_id,
+            items: items_to_add,
+        });
+
+        self.do_tx(tx);
+
+        self.doc.clear_sel();
+        self.doc.runtime.sel_items = pasted_roots.clone();
+
+        all_pasted_ids
+    }
+
+    pub fn z_order_sel(&mut self, cmd: ZOrderCmd) {
+        let mut tx = InkTx::new(match cmd {
+            ZOrderCmd::BringForward => "bring forward",
+            ZOrderCmd::SendBackward => "send backward",
+            ZOrderCmd::BringToFront => "bring to front",
+            ZOrderCmd::SendToBack => "send to back",
+        });
+
+        let mut has_changes = false;
+
+        for li in 0..self.doc.layers.len() {
+            let layer = &self.doc.layers[li];
+            let layer_id = layer.id;
+            let mut selected_ids = Vec::new();
+            let mut unselected_ids = Vec::new();
+            let mut first_sel_idx = None;
+            let mut last_sel_idx = None;
+
+            for (i, item) in layer.items.iter().enumerate() {
+                if is_item_selected_logical(&self.doc, item) {
+                    selected_ids.push(item.id());
+                    if first_sel_idx.is_none() {
+                        first_sel_idx = Some(i);
+                    }
+                    last_sel_idx = Some(i);
+                } else {
+                    unselected_ids.push(item.id());
+                }
+            }
+
+            if selected_ids.is_empty() {
+                continue;
+            }
+
+            let first_sel_idx = first_sel_idx.unwrap();
+            let last_sel_idx = last_sel_idx.unwrap();
+
+            let mut k = 0;
+            for i in last_sel_idx + 1..layer.items.len() {
+                if !is_item_selected_logical(&self.doc, &layer.items[i]) {
+                    k += 1;
+                }
+            }
+
+            let mut j = 0;
+            for i in 0..first_sel_idx {
+                if !is_item_selected_logical(&self.doc, &layer.items[i]) {
+                    j += 1;
+                }
+            }
+
+            let n = unselected_ids.len();
+
+            let after_order = match cmd {
+                ZOrderCmd::BringToFront => {
+                    if k == 0 {
+                        continue;
+                    }
+                    let mut order = unselected_ids.clone();
+                    order.extend(selected_ids);
+                    order
+                }
+                ZOrderCmd::SendToBack => {
+                    if j == 0 {
+                        continue;
+                    }
+                    let mut order = selected_ids.clone();
+                    order.extend(unselected_ids);
+                    order
+                }
+                ZOrderCmd::BringForward => {
+                    if k == 0 {
+                        continue;
+                    }
+                    let insert_pos = n - k + 1;
+                    let mut order = Vec::new();
+                    order.extend_from_slice(&unselected_ids[0..insert_pos]);
+                    order.extend(selected_ids);
+                    order.extend_from_slice(&unselected_ids[insert_pos..n]);
+                    order
+                }
+                ZOrderCmd::SendBackward => {
+                    if j == 0 {
+                        continue;
+                    }
+                    let insert_pos = j - 1;
+                    let mut order = Vec::new();
+                    order.extend_from_slice(&unselected_ids[0..insert_pos]);
+                    order.extend(selected_ids);
+                    order.extend_from_slice(&unselected_ids[insert_pos..n]);
+                    order
+                }
+            };
+
+            let before_order: Vec<ItemId> = layer.items.iter().map(|item| item.id()).collect();
+            if before_order != after_order {
+                tx = tx.push(InkOp::ReorderItems {
+                    layer_id,
+                    before_order,
+                    after_order,
+                });
+                has_changes = true;
+            }
+        }
+
+        if has_changes {
+            self.do_tx(tx);
+        }
+    }
+
     pub fn export_json(&self) -> Result<String, InkError> {
         export_json::serialize_doc(&self.doc)
     }
@@ -335,6 +628,13 @@ impl InkSession {
             }
             InkOp::DeleteAsset { asset } => {
                 self.doc.delete_asset(asset.id);
+            }
+            InkOp::ReorderItems {
+                layer_id,
+                after_order,
+                ..
+            } => {
+                let _ = self.doc.reorder_items_in_layer(*layer_id, after_order);
             }
         }
     }
@@ -440,6 +740,17 @@ impl InkSession {
                         asset: asset.clone(),
                     });
                 }
+                InkOp::ReorderItems {
+                    layer_id,
+                    before_order,
+                    after_order,
+                } => {
+                    inv_ops.push(InkOp::ReorderItems {
+                        layer_id: *layer_id,
+                        before_order: after_order.clone(),
+                        after_order: before_order.clone(),
+                    });
+                }
             }
         }
         InkTx {
@@ -447,4 +758,27 @@ impl InkSession {
             ops: inv_ops,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZOrderCmd {
+    BringForward,
+    SendBackward,
+    BringToFront,
+    SendToBack,
+}
+
+fn is_item_selected_logical(doc: &InkDoc, item: &InkItem) -> bool {
+    let sel = &doc.runtime.sel_items;
+    if sel.contains(&item.id()) {
+        return true;
+    }
+    if let InkItem::Stroke(s) = item {
+        if let Some(pid) = s.parent_id {
+            if sel.contains(&pid) {
+                return true;
+            }
+        }
+    }
+    false
 }

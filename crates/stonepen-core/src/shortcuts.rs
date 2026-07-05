@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
+    // Tools
     ToolPen,
     ToolPencil,
     ToolHighlighter,
@@ -10,16 +11,34 @@ pub enum Command {
     ToolLasso,
     ToolSelect,
     ToolPan,
+    // History
     Undo,
     Redo,
+    // Selection
+    SelectAll,
     DeleteSelection,
     DuplicateSelection,
     ClearSelection,
+    // Editing
+    Copy,
+    Cut,
+    Paste,
+    // Nudge
+    NudgeLeft,
+    NudgeRight,
+    NudgeUp,
+    NudgeDown,
+    // Z-order
+    BringForward,
+    SendBackward,
+    BringToFront,
+    SendToBack,
+    // Navigation
     HoldPan,
 }
 
 impl Command {
-    pub const ALL: [Command; 13] = [
+    pub const ALL: [Command; 25] = [
         Command::ToolPen,
         Command::ToolPencil,
         Command::ToolHighlighter,
@@ -29,9 +48,21 @@ impl Command {
         Command::ToolPan,
         Command::Undo,
         Command::Redo,
+        Command::SelectAll,
         Command::DeleteSelection,
         Command::DuplicateSelection,
         Command::ClearSelection,
+        Command::Copy,
+        Command::Cut,
+        Command::Paste,
+        Command::NudgeLeft,
+        Command::NudgeRight,
+        Command::NudgeUp,
+        Command::NudgeDown,
+        Command::BringForward,
+        Command::SendBackward,
+        Command::BringToFront,
+        Command::SendToBack,
         Command::HoldPan,
     ];
 
@@ -46,9 +77,21 @@ impl Command {
             Command::ToolPan => "tool_pan",
             Command::Undo => "undo",
             Command::Redo => "redo",
+            Command::SelectAll => "select_all",
             Command::DeleteSelection => "delete_selection",
             Command::DuplicateSelection => "duplicate_selection",
             Command::ClearSelection => "clear_selection",
+            Command::Copy => "copy",
+            Command::Cut => "cut",
+            Command::Paste => "paste",
+            Command::NudgeLeft => "nudge_left",
+            Command::NudgeRight => "nudge_right",
+            Command::NudgeUp => "nudge_up",
+            Command::NudgeDown => "nudge_down",
+            Command::BringForward => "bring_forward",
+            Command::SendBackward => "send_backward",
+            Command::BringToFront => "bring_to_front",
+            Command::SendToBack => "send_to_back",
             Command::HoldPan => "hold_pan",
         }
     }
@@ -64,9 +107,21 @@ impl Command {
             "tool_pan" => Some(Command::ToolPan),
             "undo" => Some(Command::Undo),
             "redo" => Some(Command::Redo),
+            "select_all" => Some(Command::SelectAll),
             "delete_selection" => Some(Command::DeleteSelection),
             "duplicate_selection" => Some(Command::DuplicateSelection),
             "clear_selection" => Some(Command::ClearSelection),
+            "copy" => Some(Command::Copy),
+            "cut" => Some(Command::Cut),
+            "paste" => Some(Command::Paste),
+            "nudge_left" => Some(Command::NudgeLeft),
+            "nudge_right" => Some(Command::NudgeRight),
+            "nudge_up" => Some(Command::NudgeUp),
+            "nudge_down" => Some(Command::NudgeDown),
+            "bring_forward" => Some(Command::BringForward),
+            "send_backward" => Some(Command::SendBackward),
+            "bring_to_front" => Some(Command::BringToFront),
+            "send_to_back" => Some(Command::SendToBack),
             "hold_pan" => Some(Command::HoldPan),
             _ => None,
         }
@@ -83,10 +138,60 @@ impl Command {
             Command::ToolPan => "Pan Tool",
             Command::Undo => "Undo",
             Command::Redo => "Redo",
+            Command::SelectAll => "Select All",
             Command::DeleteSelection => "Delete Selection",
             Command::DuplicateSelection => "Duplicate Selection",
             Command::ClearSelection => "Clear / Cancel Selection",
+            Command::Copy => "Copy",
+            Command::Cut => "Cut",
+            Command::Paste => "Paste",
+            Command::NudgeLeft => "Nudge Left",
+            Command::NudgeRight => "Nudge Right",
+            Command::NudgeUp => "Nudge Up",
+            Command::NudgeDown => "Nudge Down",
+            Command::BringForward => "Bring Forward",
+            Command::SendBackward => "Send Backward",
+            Command::BringToFront => "Bring to Front",
+            Command::SendToBack => "Send to Back",
             Command::HoldPan => "Temporary Pan (Hold Space)",
+        }
+    }
+
+    /// Whether this command may fire on keyboard auto-repeat.
+    pub fn allows_repeat(&self) -> bool {
+        matches!(
+            self,
+            Command::NudgeLeft | Command::NudgeRight | Command::NudgeUp | Command::NudgeDown
+        )
+    }
+
+    /// UI group name for the settings shortcut table.
+    pub fn group(&self) -> &'static str {
+        match self {
+            Command::ToolPen
+            | Command::ToolPencil
+            | Command::ToolHighlighter
+            | Command::ToolEraser
+            | Command::ToolLasso
+            | Command::ToolSelect
+            | Command::ToolPan => "Tools",
+            Command::Undo | Command::Redo => "History",
+            Command::SelectAll
+            | Command::DeleteSelection
+            | Command::DuplicateSelection
+            | Command::ClearSelection => "Selection",
+            Command::Copy
+            | Command::Cut
+            | Command::Paste
+            | Command::NudgeLeft
+            | Command::NudgeRight
+            | Command::NudgeUp
+            | Command::NudgeDown
+            | Command::BringForward
+            | Command::SendBackward
+            | Command::BringToFront
+            | Command::SendToBack => "Editing",
+            Command::HoldPan => "Navigation",
         }
     }
 }
@@ -242,6 +347,7 @@ impl ShortcutMap {
 
     pub fn defaults() -> Self {
         let mut sm = ShortcutMap::new();
+        // Tools
         let _ = sm.add_binding(Command::ToolPen, KeyChord::simple("KeyP"));
         let _ = sm.add_binding(Command::ToolPencil, KeyChord::simple("KeyN"));
         let _ = sm.add_binding(Command::ToolHighlighter, KeyChord::simple("KeyM"));
@@ -249,14 +355,34 @@ impl ShortcutMap {
         let _ = sm.add_binding(Command::ToolLasso, KeyChord::simple("KeyL"));
         let _ = sm.add_binding(Command::ToolSelect, KeyChord::simple("KeyV"));
         let _ = sm.add_binding(Command::ToolPan, KeyChord::simple("KeyH"));
+        // History
         let _ = sm.add_binding(Command::HoldPan, KeyChord::simple("Space"));
         let _ = sm.add_binding(Command::Undo, KeyChord::primary("KeyZ"));
         let _ = sm.add_binding(Command::Redo, KeyChord::primary_shift("KeyZ"));
         let _ = sm.add_binding(Command::Redo, KeyChord::primary("KeyY"));
+        // Selection
+        let _ = sm.add_binding(Command::SelectAll, KeyChord::primary("KeyA"));
         let _ = sm.add_binding(Command::DeleteSelection, KeyChord::simple("Delete"));
         let _ = sm.add_binding(Command::DeleteSelection, KeyChord::simple("Backspace"));
         let _ = sm.add_binding(Command::DuplicateSelection, KeyChord::primary("KeyD"));
         let _ = sm.add_binding(Command::ClearSelection, KeyChord::simple("Escape"));
+        // Editing
+        let _ = sm.add_binding(Command::Copy, KeyChord::primary("KeyC"));
+        let _ = sm.add_binding(Command::Cut, KeyChord::primary("KeyX"));
+        let _ = sm.add_binding(Command::Paste, KeyChord::primary("KeyV"));
+        // Nudge
+        let _ = sm.add_binding(Command::NudgeLeft, KeyChord::simple("ArrowLeft"));
+        let _ = sm.add_binding(Command::NudgeRight, KeyChord::simple("ArrowRight"));
+        let _ = sm.add_binding(Command::NudgeUp, KeyChord::simple("ArrowUp"));
+        let _ = sm.add_binding(Command::NudgeDown, KeyChord::simple("ArrowDown"));
+        // Z-order
+        let _ = sm.add_binding(Command::BringForward, KeyChord::primary("BracketRight"));
+        let _ = sm.add_binding(Command::SendBackward, KeyChord::primary("BracketLeft"));
+        let _ = sm.add_binding(
+            Command::BringToFront,
+            KeyChord::primary_shift("BracketRight"),
+        );
+        let _ = sm.add_binding(Command::SendToBack, KeyChord::primary_shift("BracketLeft"));
         sm
     }
 }

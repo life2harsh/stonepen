@@ -1,11 +1,13 @@
 use serde::Serialize;
 use stonepen_core::bbox::BBox;
 use stonepen_core::brush::Brush;
+use stonepen_core::clipboard::ClipboardBundle;
 use stonepen_core::ids::{AssetId, ItemId, LayerId};
 use stonepen_core::item::{ImageAsset, InkItem};
 use stonepen_core::ops::{InkOp, InkTx};
 use stonepen_core::point::{InkPoint, Point2, PointerKind};
-use stonepen_core::session::{InkSession, Tool};
+use stonepen_core::sel::SelectionIntent;
+use stonepen_core::session::{InkSession, Tool, ZOrderCmd};
 use stonepen_core::stroke::StrokeBuilder;
 use stonepen_core::viewport::Viewport;
 use stonepen_core::xform::Xform2D;
@@ -52,6 +54,7 @@ pub enum InputState {
     Lassoing {
         ptr_id: i32,
         polygon: Vec<Point2>,
+        intent: SelectionIntent,
     },
     Panning {
         ptr_id: i32,
@@ -82,7 +85,15 @@ pub enum InputState {
         curr_screen: Point2,
         curr_world: Point2,
         active: bool,
+        intent: SelectionIntent,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct NudgeState {
+    pub active_cmd: Command,
+    pub before_xforms: Vec<(ItemId, Xform2D)>,
+    pub total_delta: Point2,
 }
 
 pub struct StonepenApp {
@@ -98,6 +109,10 @@ pub struct StonepenApp {
     pub temp_pan: TempPanController,
     pub capture_command: Option<Command>,
     pub last_conflict: Option<Command>,
+    pub nudge_state: Option<NudgeState>,
+    pub clipboard: Option<ClipboardBundle>,
+    pub status_msg: Option<String>,
+    pub paste_generation: u32,
 }
 
 impl StonepenApp {
@@ -150,6 +165,10 @@ impl StonepenApp {
             temp_pan: TempPanController::new(),
             capture_command: None,
             last_conflict: None,
+            nudge_state: None,
+            clipboard: None,
+            status_msg: None,
+            paste_generation: 0,
         })
     }
 
@@ -204,9 +223,15 @@ impl StonepenApp {
             Tool::Lasso => {
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
                 self.lasso_preview = vec![world];
+                let intent = if e.shift_key() {
+                    SelectionIntent::Add
+                } else {
+                    SelectionIntent::Replace
+                };
                 self.input = InputState::Lassoing {
                     ptr_id: pi.id,
                     polygon: vec![world],
+                    intent,
                 };
             }
             Tool::Pan => {
@@ -267,7 +292,13 @@ impl StonepenApp {
                     SelHit::None => {
                         let clicked = self.session.doc.hit_test_item(world_pos, 8.0, self.vp.zoom);
                         if let Some(id) = clicked {
-                            if self.session.doc.runtime.sel_items.contains(&id) {
+                            if e.shift_key() {
+                                // Toggle item selection
+                                if self.session.doc.runtime.sel_items.contains(&id) {
+                                    self.session.doc.runtime.sel_items.remove(&id);
+                                } else {
+                                    self.session.doc.runtime.sel_items.insert(id);
+                                }
                                 let roots = self.session.doc.transform_roots();
                                 let before = roots
                                     .iter()
@@ -280,18 +311,39 @@ impl StonepenApp {
                                     before,
                                 };
                             } else {
-                                self.session.doc.clear_sel();
-                                self.session.doc.runtime.sel_items.insert(id);
-                                let before =
-                                    vec![(id, self.session.doc.get_item(id).unwrap().xform())];
-                                self.update_cursor("grabbing");
-                                self.input = InputState::MovingSel {
-                                    ptr_id: pi.id,
-                                    start_world,
-                                    before,
-                                };
+                                if self.session.doc.runtime.sel_items.contains(&id) {
+                                    let roots = self.session.doc.transform_roots();
+                                    let before = roots
+                                        .iter()
+                                        .map(|&id| {
+                                            (id, self.session.doc.get_item(id).unwrap().xform())
+                                        })
+                                        .collect();
+                                    self.update_cursor("grabbing");
+                                    self.input = InputState::MovingSel {
+                                        ptr_id: pi.id,
+                                        start_world,
+                                        before,
+                                    };
+                                } else {
+                                    self.session.doc.clear_sel();
+                                    self.session.doc.runtime.sel_items.insert(id);
+                                    let before =
+                                        vec![(id, self.session.doc.get_item(id).unwrap().xform())];
+                                    self.update_cursor("grabbing");
+                                    self.input = InputState::MovingSel {
+                                        ptr_id: pi.id,
+                                        start_world,
+                                        before,
+                                    };
+                                }
                             }
                         } else {
+                            let intent = if e.shift_key() {
+                                SelectionIntent::Add
+                            } else {
+                                SelectionIntent::Replace
+                            };
                             self.input = InputState::MarqueeSelecting {
                                 ptr_id: pi.id,
                                 start_screen: Point2::new(pi.x, pi.y),
@@ -299,6 +351,7 @@ impl StonepenApp {
                                 curr_screen: Point2::new(pi.x, pi.y),
                                 curr_world: world_pos,
                                 active: false,
+                                intent,
                             };
                         }
                     }
@@ -366,6 +419,7 @@ impl StonepenApp {
             InputState::Lassoing {
                 ptr_id: id,
                 polygon,
+                ..
             } if *id == ptr_id => {
                 let pi = &inputs[inputs.len() - 1];
                 let world = self.vp.screen_to_world(Point2::new(pi.x, pi.y));
@@ -518,8 +572,11 @@ impl StonepenApp {
                 }
                 self.preview_pts.clear();
             }
-            InputState::Lassoing { polygon, .. } => {
-                self.session.select_lasso(&polygon);
+            InputState::Lassoing {
+                polygon, intent, ..
+            } => {
+                let hits = stonepen_core::lasso_query(&self.session.doc, &polygon);
+                stonepen_core::apply_selection_hits(&mut self.session.doc, &hits, intent);
                 self.lasso_preview.clear();
             }
             InputState::Erasing { erased, .. } => {
@@ -555,6 +612,7 @@ impl StonepenApp {
                 start_world,
                 curr_world,
                 active,
+                intent,
                 ..
             } => {
                 if active {
@@ -563,9 +621,12 @@ impl StonepenApp {
                     let min_y = start_world.y.min(curr_world.y);
                     let max_y = start_world.y.max(curr_world.y);
                     let rect = stonepen_core::bbox::BBox::new(min_x, min_y, max_x, max_y);
-                    stonepen_core::select_rect(&mut self.session.doc, rect);
+                    let hits = stonepen_core::rect_query(&self.session.doc, rect);
+                    stonepen_core::apply_selection_hits(&mut self.session.doc, &hits, intent);
                 } else {
-                    self.session.doc.clear_sel();
+                    if intent == SelectionIntent::Replace {
+                        self.session.doc.clear_sel();
+                    }
                 }
                 let pi = PointerInput::from_event(e, &self.canvas);
                 let (hit, _) = self.selection_hit_test(Point2::new(pi.x, pi.y));
@@ -685,11 +746,31 @@ impl StonepenApp {
             return;
         }
 
-        if let Some(cmd) = self.settings.shortcuts.command_for_chord(&chord) {
-            e.prevent_default();
-            if e.repeat() {
+        let mut matched_cmd = self.settings.shortcuts.command_for_chord(&chord);
+        let mut shift_nudge = e.shift_key();
+
+        if matched_cmd.is_none() && e.shift_key() {
+            let mut fallback_chord = chord.clone();
+            fallback_chord.shift = false;
+            if let Some(cmd) = self.settings.shortcuts.command_for_chord(&fallback_chord) {
+                if matches!(
+                    cmd,
+                    Command::NudgeLeft
+                        | Command::NudgeRight
+                        | Command::NudgeUp
+                        | Command::NudgeDown
+                ) {
+                    matched_cmd = Some(cmd);
+                    shift_nudge = true;
+                }
+            }
+        }
+
+        if let Some(cmd) = matched_cmd {
+            if e.repeat() && !cmd.allows_repeat() {
                 return;
             }
+            e.prevent_default();
             if cmd == Command::HoldPan {
                 let is_idle = matches!(self.input, InputState::Idle);
                 if self.temp_pan.handle_keydown(&chord.code, is_idle) {
@@ -697,6 +778,11 @@ impl StonepenApp {
                     self.update_status();
                     self.redraw();
                 }
+            } else if matches!(
+                cmd,
+                Command::NudgeLeft | Command::NudgeRight | Command::NudgeUp | Command::NudgeDown
+            ) {
+                self.execute_nudge(cmd, shift_nudge);
             } else {
                 if matches!(self.input, InputState::Idle)
                     || cmd == Command::Undo
@@ -717,13 +803,106 @@ impl StonepenApp {
             self.update_status();
             self.redraw();
         }
+
+        if let Some(ref state) = self.nudge_state {
+            let chords = self.settings.shortcuts.bindings(state.active_cmd);
+            let is_nudge_key = chords.iter().any(|c| c.code == code);
+            if is_nudge_key {
+                self.commit_nudge();
+            }
+        }
     }
 
     pub fn on_blur(&mut self) {
         self.reset_transient_input();
     }
 
+    pub fn commit_nudge(&mut self) {
+        if let Some(state) = self.nudge_state.take() {
+            let mut item_ids = Vec::new();
+            let mut before_xfs = Vec::new();
+            let mut after_xfs = Vec::new();
+            for (id, start_xf) in state.before_xforms {
+                if let Some(item) = self.session.doc.get_item(id) {
+                    item_ids.push(id);
+                    before_xfs.push(start_xf);
+                    after_xfs.push(item.xform());
+                }
+            }
+            if !item_ids.is_empty() && before_xfs != after_xfs {
+                let tx = InkTx::new("nudge").push(InkOp::TransformItems {
+                    item_ids,
+                    before: before_xfs,
+                    after: after_xfs,
+                });
+                self.session.do_tx(tx);
+                self.update_status();
+            }
+        }
+    }
+
+    pub fn execute_nudge(&mut self, cmd: Command, shift: bool) {
+        if !matches!(
+            cmd,
+            Command::NudgeLeft | Command::NudgeRight | Command::NudgeUp | Command::NudgeDown
+        ) {
+            return;
+        }
+
+        if let Some(ref state) = self.nudge_state {
+            if state.active_cmd != cmd {
+                self.commit_nudge();
+            }
+        }
+
+        if self.nudge_state.is_none() {
+            let roots = self.session.doc.transform_roots();
+            if roots.is_empty() {
+                return;
+            }
+            let before_xforms = roots
+                .iter()
+                .map(|&id| (id, self.session.doc.get_item(id).unwrap().xform()))
+                .collect();
+            self.nudge_state = Some(NudgeState {
+                active_cmd: cmd,
+                before_xforms,
+                total_delta: Point2::new(0.0, 0.0),
+            });
+        }
+
+        let step_size = if shift { 10.0 } else { 1.0 };
+        let dx_css = match cmd {
+            Command::NudgeLeft => -step_size,
+            Command::NudgeRight => step_size,
+            _ => 0.0,
+        };
+        let dy_css = match cmd {
+            Command::NudgeUp => -step_size,
+            Command::NudgeDown => step_size,
+            _ => 0.0,
+        };
+
+        let dx_world = dx_css / self.vp.zoom;
+        let dy_world = dy_css / self.vp.zoom;
+
+        if let Some(ref mut state) = self.nudge_state {
+            state.total_delta.x += dx_world;
+            state.total_delta.y += dy_world;
+
+            let translation = Xform2D::translate(state.total_delta.x, state.total_delta.y);
+            for &(id, start_xf) in &state.before_xforms {
+                self.session
+                    .doc
+                    .apply_world_xform_to_item(id, translation, start_xf);
+            }
+            self.session.doc.rebuild_runtime();
+        }
+        self.redraw();
+    }
+
     pub fn reset_transient_input(&mut self) {
+        self.commit_nudge();
         let old_state = std::mem::replace(&mut self.input, InputState::Idle);
         match old_state {
             InputState::Erasing { erased, .. } => {
@@ -1010,6 +1189,15 @@ impl StonepenApp {
         if self.capture_command.is_some() {
             return;
         }
+        if self.nudge_state.is_some() {
+            if !matches!(
+                cmd,
+                Command::NudgeLeft | Command::NudgeRight | Command::NudgeUp | Command::NudgeDown
+            ) {
+                self.commit_nudge();
+            }
+        }
+
         match cmd {
             Command::ToolPen => {
                 self.session.active_brush = Brush::default_pen();
@@ -1067,6 +1255,55 @@ impl StonepenApp {
                 }
             }
             Command::HoldPan => {}
+            Command::SelectAll => {
+                self.session.select_all();
+                self.status_msg = Some("Selected all".into());
+            }
+            Command::Copy => {
+                if let Some(bundle) = self.session.copy_sel() {
+                    let count = bundle.items.len();
+                    self.clipboard = Some(bundle);
+                    self.paste_generation = 0;
+                    self.status_msg = Some(format!("Copied {count} items"));
+                }
+            }
+            Command::Cut => {
+                if let Some(bundle) = self.session.cut_sel() {
+                    let count = bundle.items.len();
+                    self.clipboard = Some(bundle);
+                    self.paste_generation = 0;
+                    self.status_msg = Some(format!("Cut {count} items"));
+                }
+            }
+            Command::Paste => {
+                if let Some(ref bundle) = self.clipboard {
+                    self.paste_generation += 1;
+                    let offset_css = 20.0 * (self.paste_generation as f32);
+                    let offset_world = offset_css / self.vp.zoom;
+                    let xform = Xform2D::translate(offset_world, offset_world);
+                    let pasted_ids = self.session.paste_sel(bundle, xform);
+                    self.status_msg = Some(format!("Pasted {} items", pasted_ids.len()));
+                }
+            }
+            Command::NudgeLeft | Command::NudgeRight | Command::NudgeUp | Command::NudgeDown => {
+                self.execute_nudge(cmd, false);
+            }
+            Command::BringForward => {
+                self.session.z_order_sel(ZOrderCmd::BringForward);
+                self.status_msg = Some("Moved forward".into());
+            }
+            Command::SendBackward => {
+                self.session.z_order_sel(ZOrderCmd::SendBackward);
+                self.status_msg = Some("Moved backward".into());
+            }
+            Command::BringToFront => {
+                self.session.z_order_sel(ZOrderCmd::BringToFront);
+                self.status_msg = Some("Moved to front".into());
+            }
+            Command::SendToBack => {
+                self.session.z_order_sel(ZOrderCmd::SendToBack);
+                self.status_msg = Some("Moved to back".into());
+            }
         }
         self.update_status();
         self.redraw();
@@ -1417,9 +1654,12 @@ impl StonepenApp {
         } else {
             "saved"
         };
-        let status = format!(
+        let mut status = format!(
             "items: {total}  selected: {sel}  tool: {tool_str}  zoom: {zoom_pct}%  {dirty_str}"
         );
+        if let Some(ref msg) = self.status_msg {
+            status = format!("{status} | {msg}");
+        }
         if let Some(el) = document.get_element_by_id("status-bar") {
             el.set_text_content(Some(&status));
         }

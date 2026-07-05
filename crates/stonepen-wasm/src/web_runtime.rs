@@ -14,7 +14,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::{
-    AddEventListenerOptions, ClipboardEvent, DataTransferItem, Element, Event, FileReader,
+    AddEventListenerOptions, ClipboardEvent, Element, Event, FileReader,
     HtmlInputElement, KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent,
 };
 
@@ -482,31 +482,26 @@ impl WebRuntime {
                     Ok(r) => r,
                     Err(_) => return,
                 };
-                // onload callback — one-shot, forget() is the documented safe choice
-                // for one-shot FileReader callbacks.
+                input.set_value("");
                 let app_c = Rc::clone(&app);
-                let onload: Closure<dyn FnMut(ProgressEvent)> =
-                    Closure::once(move |ev: ProgressEvent| {
-                        let target = match ev.target() {
-                            Some(t) => t,
-                            None => return,
-                        };
-                        let reader = match target.dyn_into::<FileReader>() {
-                            Ok(r) => r,
-                            Err(_) => return,
-                        };
-                        let result = match reader.result() {
-                            Ok(v) => v,
-                            Err(_) => return,
-                        };
-                        let json = result.as_string().unwrap_or_default();
-                        app_c.borrow_mut().action_load(&json);
-                    });
-                reader.set_onload(Some(onload.as_ref().unchecked_ref()));
-                // One-shot: forget after registering. The FileReader holds a strong
-                // reference until the load event fires and the closure is consumed.
-                onload.forget();
-
+                let onload = Closure::once_into_js(move |ev: ProgressEvent| {
+                    let target = match ev.target() {
+                        Some(t) => t,
+                        None => return,
+                    };
+                    let reader = match target.dyn_into::<FileReader>() {
+                        Ok(r) => r,
+                        Err(_) => return,
+                    };
+                    let result = match reader.result() {
+                        Ok(v) => v,
+                        Err(_) => return,
+                    };
+                    let json = result.as_string().unwrap_or_default();
+                    app_c.borrow_mut().action_load(&json);
+                })
+                .unchecked_into::<js_sys::Function>();
+                reader.set_onload(Some(&onload));
                 let _ = reader.read_as_text(&file);
             })
         };
@@ -576,9 +571,6 @@ impl WebRuntime {
         }
 
         // -----------------------------------------------------------------------
-        // Clipboard paste
-        // -----------------------------------------------------------------------
-
         let on_paste = {
             let app = Rc::clone(&app);
             Closure::<dyn FnMut(ClipboardEvent)>::new(move |e: ClipboardEvent| {
@@ -587,107 +579,142 @@ impl WebRuntime {
                     None => return,
                 };
                 let items = clipboard_data.items();
+                let mut has_image = false;
+                let mut image_item = None;
                 for i in 0..items.length() {
-                    let item: DataTransferItem = match items.get(i) {
-                        Some(it) => it,
-                        None => continue,
-                    };
-                    if item.kind() == "file" && item.type_().starts_with("image/") {
-                        let file = match item.get_as_file() {
-                            Ok(Some(f)) => f,
-                            _ => continue,
-                        };
-                        let mime = file.type_();
-                        let reader = match FileReader::new() {
-                            Ok(r) => r,
-                            Err(_) => continue,
-                        };
-
-                        // We need the object URL to decode image dimensions.
-                        let object_url = match web_sys::Url::create_object_url_with_blob(&file) {
-                            Ok(url) => url,
-                            Err(_) => continue,
-                        };
-                        let object_url_clone = object_url.clone();
-
-                        let app_c = Rc::clone(&app);
-
-                        // Chain: FileReader.readAsArrayBuffer → onload → create Image → onload → paste
-                        let onload: Closure<dyn FnMut(ProgressEvent)> =
-                            Closure::once(move |ev: ProgressEvent| {
-                                let target = match ev.target() {
-                                    Some(t) => t,
-                                    None => {
-                                        // Revoke URL even on failure
-                                        let _ = web_sys::Url::revoke_object_url(&object_url_clone);
-                                        return;
-                                    }
-                                };
-                                let reader = match target.dyn_into::<FileReader>() {
-                                    Ok(r) => r,
-                                    Err(_) => {
-                                        let _ = web_sys::Url::revoke_object_url(&object_url_clone);
-                                        return;
-                                    }
-                                };
-                                let result = match reader.result() {
-                                    Ok(v) => v,
-                                    Err(_) => {
-                                        let _ = web_sys::Url::revoke_object_url(&object_url_clone);
-                                        return;
-                                    }
-                                };
-                                // Convert ArrayBuffer to Uint8Array
-                                let array_buf = match result.dyn_into::<js_sys::ArrayBuffer>() {
-                                    Ok(ab) => ab,
-                                    Err(_) => {
-                                        let _ = web_sys::Url::revoke_object_url(&object_url_clone);
-                                        return;
-                                    }
-                                };
-                                let bytes = js_sys::Uint8Array::new(&array_buf).to_vec();
-                                let mime_c = mime.clone();
-                                let url_c = object_url_clone.clone();
-
-                                // Create Image element to decode dimensions
-                                let img = match web_sys::HtmlImageElement::new() {
-                                    Ok(i) => i,
-                                    Err(_) => {
-                                        let _ = web_sys::Url::revoke_object_url(&object_url_clone);
-                                        return;
-                                    }
-                                };
-                                let app_cc = Rc::clone(&app_c);
-                                let bytes_rc = Rc::new(bytes);
-                                let img_onload: Closure<dyn FnMut()> = {
-                                    let img_ref = img.clone();
-                                    let bytes_r = Rc::clone(&bytes_rc);
-                                    Closure::once(move || {
-                                        let w = img_ref.natural_width();
-                                        let h = img_ref.natural_height();
-                                        // Revoke object URL now that dimensions decoded
-                                        let _ = web_sys::Url::revoke_object_url(&url_c);
-                                        if w > 0 && h > 0 {
-                                            app_cc
-                                                .borrow_mut()
-                                                .paste_image(&bytes_r, &mime_c, w, h);
-                                        }
-                                    })
-                                };
-                                img.set_onload(Some(img_onload.as_ref().unchecked_ref()));
-                                // One-shot image onload — forget is safe here.
-                                img_onload.forget();
-                                img.set_src(&object_url_clone);
-                            });
-
-                        reader.set_onload(Some(onload.as_ref().unchecked_ref()));
-                        // One-shot FileReader onload — forget is safe here.
-                        onload.forget();
-
-                        let _ = reader.read_as_array_buffer(&file);
-                        e.prevent_default();
-                        break; // Only process first image
+                    if let Some(item) = items.get(i) {
+                        if item.kind() == "file" && item.type_().starts_with("image/") {
+                            has_image = true;
+                            image_item = Some(item);
+                            break;
+                        }
                     }
+                }
+
+                if has_image {
+                    let item = image_item.unwrap();
+                    let file = match item.get_as_file() {
+                        Ok(Some(f)) => f,
+                        _ => return,
+                    };
+                    let mime = file.type_();
+                    let reader = match FileReader::new() {
+                        Ok(r) => r,
+                        Err(_) => return,
+                    };
+
+                    let object_url = match web_sys::Url::create_object_url_with_blob(&file) {
+                        Ok(url) => url,
+                        Err(_) => return,
+                    };
+
+                    let revoked = Rc::new(std::cell::Cell::new(false));
+                    let object_url_clone = object_url.clone();
+                    let object_url_clone2 = object_url.clone();
+                    let revoked_clone = Rc::clone(&revoked);
+                    let revoke_fn = {
+                        let url_to_revoke = object_url_clone.clone();
+                        move || {
+                            if !revoked_clone.get() {
+                                revoked_clone.set(true);
+                                let _ = web_sys::Url::revoke_object_url(&url_to_revoke);
+                            }
+                        }
+                    };
+
+                    let app_c = Rc::clone(&app);
+                    let revoke_fn_onload = revoke_fn.clone();
+                    let onload = {
+                        let mime_c = mime.clone();
+                        Closure::once_into_js(move |ev: ProgressEvent| {
+                            let target = match ev.target() {
+                                Some(t) => t,
+                                None => {
+                                    revoke_fn_onload();
+                                    return;
+                                }
+                            };
+                            let reader = match target.dyn_into::<FileReader>() {
+                                Ok(r) => r,
+                                Err(_) => {
+                                    revoke_fn_onload();
+                                    return;
+                                }
+                            };
+                            let result = match reader.result() {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    revoke_fn_onload();
+                                    return;
+                                }
+                            };
+                            let array_buf = match result.dyn_into::<js_sys::ArrayBuffer>() {
+                                Ok(ab) => ab,
+                                Err(_) => {
+                                    revoke_fn_onload();
+                                    return;
+                                }
+                            };
+                            let bytes = js_sys::Uint8Array::new(&array_buf).to_vec();
+
+                            let img = match web_sys::HtmlImageElement::new() {
+                                Ok(i) => i,
+                                Err(_) => {
+                                    revoke_fn_onload();
+                                    return;
+                                }
+                            };
+
+                            let app_cc = Rc::clone(&app_c);
+                            let bytes_rc = Rc::new(bytes);
+                            let img_onload = {
+                                let img_ref = img.clone();
+                                let bytes_r = Rc::clone(&bytes_rc);
+                                let revoke_fn_img_success = revoke_fn_onload.clone();
+                                Closure::once_into_js(move || {
+                                    let w = img_ref.natural_width();
+                                    let h = img_ref.natural_height();
+                                    revoke_fn_img_success();
+                                    if w > 0 && h > 0 {
+                                        app_cc.borrow_mut().paste_image(&bytes_r, &mime_c, w, h);
+                                    }
+                                })
+                                .unchecked_into::<js_sys::Function>()
+                            };
+                            img.set_onload(Some(&img_onload));
+
+                            let revoke_fn_img_error = revoke_fn_onload.clone();
+                            let img_onerror = Closure::once_into_js(move || {
+                                revoke_fn_img_error();
+                            })
+                            .unchecked_into::<js_sys::Function>();
+                            img.set_onerror(Some(&img_onerror));
+
+                            img.set_src(&object_url_clone2);
+                        })
+                        .unchecked_into::<js_sys::Function>()
+                    };
+                    reader.set_onload(Some(&onload));
+
+                    let revoke_fn_reader_error = revoke_fn.clone();
+                    let reader_onerror = Closure::once_into_js(move |_e: ProgressEvent| {
+                        revoke_fn_reader_error();
+                    })
+                    .unchecked_into::<js_sys::Function>();
+                    reader.set_onerror(Some(&reader_onerror));
+
+                    let revoke_fn_reader_abort = revoke_fn.clone();
+                    let reader_onabort = Closure::once_into_js(move |_e: ProgressEvent| {
+                        revoke_fn_reader_abort();
+                    })
+                    .unchecked_into::<js_sys::Function>();
+                    reader.set_onabort(Some(&reader_onabort));
+
+                    let _ = reader.read_as_array_buffer(&file);
+                    e.prevent_default();
+                } else {
+                    e.prevent_default();
+                    app.borrow_mut().dispatch_command(Command::Paste);
                 }
             })
         };
