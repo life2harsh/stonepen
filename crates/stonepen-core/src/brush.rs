@@ -11,7 +11,7 @@ pub enum BrushKind {
     Marker,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Brush {
     pub id: BrushId,
     pub name: String,

@@ -459,6 +459,12 @@ impl Renderer {
                 .iter()
                 .map(|&p| vp.world_to_screen(img.xform.apply(p)))
                 .collect();
+            let midpoints = [
+                Point2::new((sc[0].x + sc[1].x) * 0.5, (sc[0].y + sc[1].y) * 0.5), // Top
+                Point2::new((sc[1].x + sc[2].x) * 0.5, (sc[1].y + sc[2].y) * 0.5), // Right
+                Point2::new((sc[2].x + sc[3].x) * 0.5, (sc[2].y + sc[3].y) * 0.5), // Bottom
+                Point2::new((sc[3].x + sc[0].x) * 0.5, (sc[3].y + sc[0].y) * 0.5), // Left
+            ];
 
             self.ctx.set_stroke_style_str("rgba(60,120,220,0.85)");
             self.ctx.set_line_width(1.5);
@@ -473,6 +479,9 @@ impl Renderer {
             self.ctx.set_stroke_style_str("#3b78dc");
             self.ctx.set_line_width(2.0);
             for p in &sc {
+                draw_corner(p.x as f64, p.y as f64);
+            }
+            for p in &midpoints {
                 draw_corner(p.x as f64, p.y as f64);
             }
 
@@ -518,6 +527,10 @@ impl Renderer {
                 draw_corner(x + w, y);
                 draw_corner(x + w, y + h);
                 draw_corner(x, y + h);
+                draw_corner(x + w * 0.5, y);
+                draw_corner(x + w, y + h * 0.5);
+                draw_corner(x + w * 0.5, y + h);
+                draw_corner(x, y + h * 0.5);
 
                 let rx = x + w * 0.5;
                 let ry = y - 25.0;

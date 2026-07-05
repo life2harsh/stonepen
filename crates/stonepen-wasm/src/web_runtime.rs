@@ -66,6 +66,8 @@ pub struct WebRuntime {
     _resize_cb: Closure<dyn FnMut(js_sys::Array)>,
     // Shortcut table event delegation
     _shortcuts_table_click: Closure<dyn FnMut(Event)>,
+    // Selection bar event handlers
+    _selection_bar_handlers: Vec<Closure<dyn FnMut(Event)>>,
 }
 
 impl WebRuntime {
@@ -757,8 +759,96 @@ impl WebRuntime {
             ui.sync_tool_buttons(tool_name);
             ui.sync_brush_controls(&a.session.active_brush);
             ui.update_status(&a);
+            ui.sync_selection_bar(&a);
         }
         app.borrow().redraw();
+
+        let mut selection_bar_handlers: Vec<Closure<dyn FnMut(Event)>> = Vec::new();
+
+        let actions = [
+            ("btn-sel-bring-forward", Command::BringForward),
+            ("btn-sel-send-backward", Command::SendBackward),
+            ("btn-sel-bring-to-front", Command::BringToFront),
+            ("btn-sel-send-to-back", Command::SendToBack),
+            ("btn-sel-copy", Command::Copy),
+            ("btn-sel-cut", Command::Cut),
+            ("btn-sel-duplicate", Command::DuplicateSelection),
+            ("btn-sel-delete", Command::DeleteSelection),
+        ];
+
+        for &(id, cmd) in &actions {
+            let app = Rc::clone(&app);
+            let cb = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                app.borrow_mut().dispatch_command(cmd);
+            });
+            if let Some(el) = document.get_element_by_id(id) {
+                el.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())?;
+            }
+            selection_bar_handlers.push(cb);
+        }
+
+        let sel_width_oninput = {
+            let app = Rc::clone(&app);
+            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+                if let Some(target) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
+                    if let Ok(w) = target.value().parse::<f32>() {
+                        app.borrow_mut().set_selection_width_preview(w);
+                    }
+                }
+            })
+        };
+        if let Some(el) = document.get_element_by_id("sel-width-slider") {
+            el.add_event_listener_with_callback("input", sel_width_oninput.as_ref().unchecked_ref())?;
+        }
+        selection_bar_handlers.push(sel_width_oninput);
+
+        let sel_width_commit = {
+            let app = Rc::clone(&app);
+            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                app.borrow_mut().commit_style_preview();
+            })
+        };
+        if let Some(el) = document.get_element_by_id("sel-width-slider") {
+            el.add_event_listener_with_callback("change", sel_width_commit.as_ref().unchecked_ref())?;
+            el.add_event_listener_with_callback("blur", sel_width_commit.as_ref().unchecked_ref())?;
+            el.add_event_listener_with_callback("pointerup", sel_width_commit.as_ref().unchecked_ref())?;
+        }
+        selection_bar_handlers.push(sel_width_commit);
+
+        let sel_color_oninput = {
+            let app = Rc::clone(&app);
+            Closure::<dyn FnMut(Event)>::new(move |e: Event| {
+                if let Some(target) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
+                    let hex = target.value();
+                    if hex.len() >= 7 {
+                        if let (Ok(r), Ok(g), Ok(b)) = (
+                            u8::from_str_radix(&hex[1..3], 16),
+                            u8::from_str_radix(&hex[3..5], 16),
+                            u8::from_str_radix(&hex[5..7], 16),
+                        ) {
+                            app.borrow_mut().set_selection_color_preview(r, g, b);
+                        }
+                    }
+                }
+            })
+        };
+        if let Some(el) = document.get_element_by_id("sel-color-picker") {
+            el.add_event_listener_with_callback("input", sel_color_oninput.as_ref().unchecked_ref())?;
+        }
+        selection_bar_handlers.push(sel_color_oninput);
+
+        let sel_color_commit = {
+            let app = Rc::clone(&app);
+            Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+                app.borrow_mut().commit_style_preview();
+            })
+        };
+        if let Some(el) = document.get_element_by_id("sel-color-picker") {
+            el.add_event_listener_with_callback("change", sel_color_commit.as_ref().unchecked_ref())?;
+            el.add_event_listener_with_callback("blur", sel_color_commit.as_ref().unchecked_ref())?;
+            el.add_event_listener_with_callback("pointerup", sel_color_commit.as_ref().unchecked_ref())?;
+        }
+        selection_bar_handlers.push(sel_color_commit);
 
         Ok(Self {
             _on_pointer_down: on_pointer_down,
@@ -789,6 +879,7 @@ impl WebRuntime {
             _resize_observer: resize_observer,
             _resize_cb: resize_cb,
             _shortcuts_table_click: shortcuts_table_click,
+            _selection_bar_handlers: selection_bar_handlers,
         })
     }
 }

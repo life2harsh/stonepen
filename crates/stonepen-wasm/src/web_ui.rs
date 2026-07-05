@@ -392,4 +392,109 @@ impl WebUi {
     pub fn get_element(&self, id: &str) -> Option<Element> {
         self.document.get_element_by_id(id)
     }
+
+    pub fn sync_selection_bar(&self, app: &StonepenApp) {
+        use stonepen_core::session::ZOrderCmd;
+        let sel = &app.session.doc.runtime.sel_items;
+        let bar = match self.document.get_element_by_id("selection-bar") {
+            Some(el) => el,
+            None => return,
+        };
+
+        if sel.is_empty() {
+            let _ = bar.class_list().add_1("hidden");
+            return;
+        }
+
+        let _ = bar.class_list().remove_1("hidden");
+
+        if let Some(el) = self.document.get_element_by_id("sel-info-text") {
+            let label = if sel.len() == 1 {
+                "1 item selected".to_string()
+            } else {
+                format!("{} items selected", sel.len())
+            };
+            el.set_text_content(Some(&label));
+        }
+
+        let z_cmds = [
+            ("btn-sel-bring-forward", ZOrderCmd::BringForward),
+            ("btn-sel-send-backward", ZOrderCmd::SendBackward),
+            ("btn-sel-bring-to-front", ZOrderCmd::BringToFront),
+            ("btn-sel-send-to-back", ZOrderCmd::SendToBack),
+        ];
+        for &(id, cmd) in &z_cmds {
+            if let Some(el) = self.document.get_element_by_id(id) {
+                if let Ok(btn) = el.dyn_into::<web_sys::HtmlButtonElement>() {
+                    btn.set_disabled(!app.session.is_z_order_enabled(cmd));
+                }
+            }
+        }
+
+        let sel_strokes: Vec<&stonepen_core::stroke::InkStroke> = sel.iter()
+            .filter_map(|&id| app.session.doc.get_stroke(id))
+            .collect();
+
+        if let Some(style_sec) = self.document.get_element_by_id("sel-style-section") {
+            if sel_strokes.is_empty() {
+                let _ = style_sec.class_list().add_1("hidden");
+            } else {
+                let _ = style_sec.class_list().remove_1("hidden");
+
+                let first_w = sel_strokes[0].brush.base_w;
+                let mut mixed_w = false;
+                for s in &sel_strokes[1..] {
+                    if (s.brush.base_w - first_w).abs() > 1e-4 {
+                        mixed_w = true;
+                        break;
+                    }
+                }
+
+                if let Some(el) = self.document.get_element_by_id("sel-width-slider") {
+                    if let Ok(input) = el.dyn_into::<HtmlInputElement>() {
+                        if !mixed_w {
+                            input.set_value(&first_w.to_string());
+                        }
+                    }
+                }
+
+                if let Some(el) = self.document.get_element_by_id("sel-width-mixed") {
+                    if mixed_w {
+                        let _ = el.class_list().remove_1("hidden");
+                    } else {
+                        let _ = el.class_list().add_1("hidden");
+                    }
+                }
+
+                let first_rgb = (sel_strokes[0].brush.color.r, sel_strokes[0].brush.color.g, sel_strokes[0].brush.color.b);
+                let mut mixed_rgb = false;
+                for s in &sel_strokes[1..] {
+                    let rgb = (s.brush.color.r, s.brush.color.g, s.brush.color.b);
+                    if rgb != first_rgb {
+                        mixed_rgb = true;
+                        break;
+                    }
+                }
+
+                if let Some(el) = self.document.get_element_by_id("sel-color-picker") {
+                    if let Ok(input) = el.dyn_into::<HtmlInputElement>() {
+                        if !mixed_rgb {
+                            let hex = sel_strokes[0].brush.color.to_hex();
+                            input.set_value(&hex);
+                        } else {
+                            input.set_value("#000000");
+                        }
+                    }
+                }
+
+                if let Some(el) = self.document.get_element_by_id("sel-color-mixed") {
+                    if mixed_rgb {
+                        let _ = el.class_list().remove_1("hidden");
+                    } else {
+                        let _ = el.class_list().add_1("hidden");
+                    }
+                }
+            }
+        }
+    }
 }
