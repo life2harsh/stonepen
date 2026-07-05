@@ -242,6 +242,17 @@ impl InkDoc {
         None
     }
 
+    pub fn single_selected_image_root(&self) -> Option<ItemId> {
+        let roots = self.transform_roots();
+        if roots.len() == 1 {
+            let root_id = *roots.iter().next().unwrap();
+            if let Some(InkItem::Image(_)) = self.get_item(root_id) {
+                return Some(root_id);
+            }
+        }
+        None
+    }
+
     pub fn apply_world_xform_to_item(
         &mut self,
         id: ItemId,

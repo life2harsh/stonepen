@@ -989,10 +989,10 @@ mod tests {
         assert_eq!(session.doc.get_stroke(sid).unwrap().geom_rev, 0);
         let mut brush = Brush::default_pen();
         brush.base_w = 5.0;
-        let tx = InkTx::new("change brush").push(InkOp::SetStrokeBrush {
+        let tx = InkTx::new("change brush").push(InkOp::SetStrokeBrushes {
             stroke_ids: vec![sid],
             before: vec![Brush::default_pen()],
-            after: brush,
+            after: vec![brush],
         });
         session.do_tx(tx);
         assert_eq!(session.doc.get_stroke(sid).unwrap().geom_rev, 1);
@@ -3515,5 +3515,109 @@ mod tests {
         let mut session = InkSession::new(800.0, 600.0);
         session.delete_sel();
         assert_eq!(session.undo_redo.undo_stack.len(), 0);
+    }
+
+    #[test]
+    fn test_editing_50_set_stroke_brushes_transaction() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(10.0, 20.0)]);
+        let id2 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(30.0, 40.0)]);
+
+        let brush1 = session.doc.get_stroke(id1).unwrap().brush.clone();
+        let brush2 = session.doc.get_stroke(id2).unwrap().brush.clone();
+
+        let mut new_brush1 = brush1.clone();
+        new_brush1.base_w = 12.5;
+        let mut new_brush2 = brush2.clone();
+        new_brush2.color.r = 255;
+
+        let tx = InkTx::new("style change").push(InkOp::SetStrokeBrushes {
+            stroke_ids: vec![id1, id2],
+            before: vec![brush1.clone(), brush2.clone()],
+            after: vec![new_brush1.clone(), new_brush2.clone()],
+        });
+        session.do_tx(tx);
+
+        assert_eq!(session.doc.get_stroke(id1).unwrap().brush.base_w, 12.5);
+        assert_eq!(session.doc.get_stroke(id2).unwrap().brush.color.r, 255);
+
+        session.undo();
+        assert_eq!(session.doc.get_stroke(id1).unwrap().brush.base_w, brush1.base_w);
+        assert_eq!(session.doc.get_stroke(id2).unwrap().brush.color.r, brush2.color.r);
+
+        session.redo();
+        assert_eq!(session.doc.get_stroke(id1).unwrap().brush.base_w, 12.5);
+        assert_eq!(session.doc.get_stroke(id2).unwrap().brush.color.r, 255);
+    }
+
+    #[test]
+    fn test_editing_51_single_selected_image_root() {
+        let mut doc = InkDoc::new(800.0, 600.0);
+        
+        let img_id1 = ItemId::new();
+        let img1 = InkItem::Image(InkImage {
+            id: img_id1,
+            asset_id: AssetId::new(),
+            width: 100.0,
+            height: 100.0,
+            opacity: 1.0,
+            xform: Xform2D::identity(),
+            local_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+            world_bbox: BBox::new(0.0, 0.0, 100.0, 100.0),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        });
+        doc.add_item(doc.active_layer_id, img1);
+        
+        let stroke_id1 = StrokeId::new();
+        let stroke1 = InkItem::Stroke(InkStroke {
+            id: stroke_id1,
+            parent_id: Some(img_id1),
+            brush: Brush::default_pen(),
+            raw_pts: vec![],
+            pts: vec![],
+            local_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            world_bbox: BBox::new(0.0, 0.0, 10.0, 10.0),
+            xform: Xform2D::identity(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            geom_rev: 0,
+        });
+        doc.add_item(doc.active_layer_id, stroke1);
+
+        assert_eq!(doc.single_selected_image_root(), None);
+
+        doc.runtime.sel_items.insert(stroke_id1);
+        assert_eq!(doc.single_selected_image_root(), None);
+
+        doc.runtime.sel_items.clear();
+        doc.runtime.sel_items.insert(img_id1);
+        assert_eq!(doc.single_selected_image_root(), Some(img_id1));
+
+        doc.runtime.sel_items.insert(stroke_id1);
+        assert_eq!(doc.single_selected_image_root(), Some(img_id1));
+    }
+
+    #[test]
+    fn test_editing_52_is_z_order_enabled_check() {
+        let mut session = InkSession::new(800.0, 600.0);
+        let id1 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(10.0, 20.0)]);
+        let id2 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(30.0, 40.0)]);
+
+        assert!(!session.is_z_order_enabled(ZOrderCmd::BringForward));
+
+        session.doc.runtime.sel_items.insert(id1);
+        assert!(session.is_z_order_enabled(ZOrderCmd::BringForward));
+        assert!(session.is_z_order_enabled(ZOrderCmd::BringToFront));
+        assert!(!session.is_z_order_enabled(ZOrderCmd::SendBackward));
+        assert!(!session.is_z_order_enabled(ZOrderCmd::SendToBack));
+
+        session.doc.runtime.sel_items.clear();
+        session.doc.runtime.sel_items.insert(id2);
+        assert!(!session.is_z_order_enabled(ZOrderCmd::BringForward));
+        assert!(!session.is_z_order_enabled(ZOrderCmd::BringToFront));
+        assert!(session.is_z_order_enabled(ZOrderCmd::SendBackward));
+        assert!(session.is_z_order_enabled(ZOrderCmd::SendToBack));
     }
 }

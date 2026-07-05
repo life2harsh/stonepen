@@ -18,10 +18,10 @@ pub enum InkOp {
         before: Vec<Xform2D>,
         after: Vec<Xform2D>,
     },
-    SetStrokeBrush {
+    SetStrokeBrushes {
         stroke_ids: Vec<StrokeId>,
         before: Vec<Brush>,
-        after: Brush,
+        after: Vec<Brush>,
     },
     ClearLayer {
         layer_id: LayerId,

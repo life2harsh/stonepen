@@ -461,6 +461,58 @@ impl InkSession {
         all_pasted_ids
     }
 
+
+    pub fn is_z_order_enabled(&self, cmd: ZOrderCmd) -> bool {
+        let sel = &self.doc.runtime.sel_items;
+        if sel.is_empty() {
+            return false;
+        }
+
+        for layer in &self.doc.layers {
+            let mut selected_indices = Vec::new();
+            for (i, item) in layer.items.iter().enumerate() {
+                if is_item_selected_logical(&self.doc, item) {
+                    selected_indices.push(i);
+                }
+            }
+
+            if selected_indices.is_empty() {
+                continue;
+            }
+
+            let first_sel_idx = selected_indices[0];
+            let last_sel_idx = selected_indices[selected_indices.len() - 1];
+
+            let mut k = 0;
+            for i in last_sel_idx + 1..layer.items.len() {
+                if !is_item_selected_logical(&self.doc, &layer.items[i]) {
+                    k += 1;
+                }
+            }
+
+            let mut j = 0;
+            for i in 0..first_sel_idx {
+                if !is_item_selected_logical(&self.doc, &layer.items[i]) {
+                    j += 1;
+                }
+            }
+
+            match cmd {
+                ZOrderCmd::BringToFront | ZOrderCmd::BringForward => {
+                    if k > 0 {
+                        return true;
+                    }
+                }
+                ZOrderCmd::SendToBack | ZOrderCmd::SendBackward => {
+                    if j > 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub fn z_order_sel(&mut self, cmd: ZOrderCmd) {
         let mut tx = InkTx::new(match cmd {
             ZOrderCmd::BringForward => "bring forward",
@@ -617,12 +669,12 @@ impl InkSession {
                 }
                 self.doc.rebuild_runtime();
             }
-            InkOp::SetStrokeBrush {
+            InkOp::SetStrokeBrushes {
                 stroke_ids, after, ..
             } => {
-                for &sid in stroke_ids {
+                for (i, &sid) in stroke_ids.iter().enumerate() {
                     if let Some(stroke) = self.doc.get_stroke_mut(sid) {
-                        stroke.brush = after.clone();
+                        stroke.brush = after[i].clone();
                         stroke.geom_rev += 1;
                         stroke.recompute_local_bbox();
                         stroke.recompute_world_bbox();
@@ -712,15 +764,15 @@ impl InkSession {
                         after: before.clone(),
                     });
                 }
-                InkOp::SetStrokeBrush {
+                InkOp::SetStrokeBrushes {
                     stroke_ids,
                     before,
                     after,
                 } => {
-                    inv_ops.push(InkOp::SetStrokeBrush {
+                    inv_ops.push(InkOp::SetStrokeBrushes {
                         stroke_ids: stroke_ids.clone(),
-                        before: vec![after.clone()],
-                        after: before[0].clone(),
+                        before: after.clone(),
+                        after: before.clone(),
                     });
                 }
                 InkOp::ClearLayer {
