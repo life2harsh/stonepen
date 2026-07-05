@@ -5,7 +5,7 @@ use stonepen_core::clipboard::ClipboardBundle;
 use stonepen_core::ids::{AssetId, ItemId, LayerId};
 use stonepen_core::item::{ImageAsset, InkItem};
 use stonepen_core::ops::{InkOp, InkTx};
-use stonepen_core::point::{InkPoint, Point2, PointerKind};
+use stonepen_core::point::{InkPoint, Point2};
 use stonepen_core::sel::SelectionIntent;
 use stonepen_core::session::{InkSession, Tool, ZOrderCmd};
 use stonepen_core::stroke::StrokeBuilder;

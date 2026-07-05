@@ -27,7 +27,6 @@ struct Listener {
     target: web_sys::EventTarget,
     event_type: String,
     callback: js_sys::Function,
-    options: Option<web_sys::AddEventListenerOptions>,
     // Drop of _closure will automatically clean up/free the Wasm Closure.
     _closure: Box<dyn std::any::Any>,
 }
@@ -55,13 +54,15 @@ impl WebRuntime {
         event_type: &str,
         closure: Closure<dyn FnMut(PointerEvent)>,
     ) -> Result<(), JsValue> {
-        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        let callback = closure
+            .as_ref()
+            .clone()
+            .unchecked_into::<js_sys::Function>();
         target.add_event_listener_with_callback(event_type, &callback)?;
         listeners.push(Listener {
             target,
             event_type: event_type.to_string(),
             callback,
-            options: None,
             _closure: Box::new(closure),
         });
         Ok(())
@@ -73,13 +74,15 @@ impl WebRuntime {
         event_type: &str,
         closure: Closure<dyn FnMut(KeyboardEvent)>,
     ) -> Result<(), JsValue> {
-        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        let callback = closure
+            .as_ref()
+            .clone()
+            .unchecked_into::<js_sys::Function>();
         target.add_event_listener_with_callback(event_type, &callback)?;
         listeners.push(Listener {
             target,
             event_type: event_type.to_string(),
             callback,
-            options: None,
             _closure: Box::new(closure),
         });
         Ok(())
@@ -92,17 +95,17 @@ impl WebRuntime {
         closure: Closure<dyn FnMut(WheelEvent)>,
         options: web_sys::AddEventListenerOptions,
     ) -> Result<(), JsValue> {
-        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        let callback = closure
+            .as_ref()
+            .clone()
+            .unchecked_into::<js_sys::Function>();
         target.add_event_listener_with_callback_and_add_event_listener_options(
-            event_type,
-            &callback,
-            &options,
+            event_type, &callback, &options,
         )?;
         listeners.push(Listener {
             target,
             event_type: event_type.to_string(),
             callback,
-            options: Some(options),
             _closure: Box::new(closure),
         });
         Ok(())
@@ -114,13 +117,15 @@ impl WebRuntime {
         event_type: &str,
         closure: Closure<dyn FnMut(ClipboardEvent)>,
     ) -> Result<(), JsValue> {
-        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        let callback = closure
+            .as_ref()
+            .clone()
+            .unchecked_into::<js_sys::Function>();
         target.add_event_listener_with_callback(event_type, &callback)?;
         listeners.push(Listener {
             target,
             event_type: event_type.to_string(),
             callback,
-            options: None,
             _closure: Box::new(closure),
         });
         Ok(())
@@ -132,13 +137,15 @@ impl WebRuntime {
         event_type: &str,
         closure: Closure<dyn FnMut(Event)>,
     ) -> Result<(), JsValue> {
-        let callback = closure.as_ref().clone().unchecked_into::<js_sys::Function>();
+        let callback = closure
+            .as_ref()
+            .clone()
+            .unchecked_into::<js_sys::Function>();
         target.add_event_listener_with_callback(event_type, &callback)?;
         listeners.push(Listener {
             target,
             event_type: event_type.to_string(),
             callback,
-            options: None,
             _closure: Box::new(closure),
         });
         Ok(())
@@ -186,7 +193,12 @@ impl WebRuntime {
                 }
             })
         };
-        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointerdown", on_pointer_down)?;
+        Self::reg_pointer(
+            &mut listeners,
+            canvas_et.clone(),
+            "pointerdown",
+            on_pointer_down,
+        )?;
 
         let on_pointer_move = {
             let app = Rc::clone(&app);
@@ -195,7 +207,12 @@ impl WebRuntime {
                 app.borrow_mut().on_pointer_move(&e);
             })
         };
-        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointermove", on_pointer_move)?;
+        Self::reg_pointer(
+            &mut listeners,
+            canvas_et.clone(),
+            "pointermove",
+            on_pointer_move,
+        )?;
 
         let on_pointer_up = {
             let app = Rc::clone(&app);
@@ -206,7 +223,12 @@ impl WebRuntime {
                 let _ = canvas_html.release_pointer_capture(e.pointer_id());
             })
         };
-        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointerup", on_pointer_up)?;
+        Self::reg_pointer(
+            &mut listeners,
+            canvas_et.clone(),
+            "pointerup",
+            on_pointer_up,
+        )?;
 
         let on_pointer_cancel = {
             let app = Rc::clone(&app);
@@ -216,7 +238,12 @@ impl WebRuntime {
                 let _ = canvas_html.release_pointer_capture(e.pointer_id());
             })
         };
-        Self::reg_pointer(&mut listeners, canvas_et.clone(), "pointercancel", on_pointer_cancel)?;
+        Self::reg_pointer(
+            &mut listeners,
+            canvas_et.clone(),
+            "pointercancel",
+            on_pointer_cancel,
+        )?;
 
         let on_lost_pointer_capture = {
             let app = Rc::clone(&app);
@@ -224,19 +251,19 @@ impl WebRuntime {
                 let active_ptr_id = {
                     let a = app.borrow();
                     match &a.input {
-                        InputState::Drawing { ptr_id, .. } => Some(ptr_id),
-                        InputState::Lassoing { ptr_id, .. } => Some(ptr_id),
-                        InputState::Erasing { ptr_id, .. } => Some(ptr_id),
-                        InputState::Panning { ptr_id, .. } => Some(ptr_id),
-                        InputState::MovingSel { ptr_id, .. } => Some(ptr_id),
-                        InputState::ScalingSel { ptr_id, .. } => Some(ptr_id),
-                        InputState::RotatingSel { ptr_id, .. } => Some(ptr_id),
-                        InputState::MarqueeSelecting { ptr_id, .. } => Some(ptr_id),
+                        InputState::Drawing { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::Lassoing { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::Erasing { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::Panning { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::MovingSel { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::ScalingSel { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::RotatingSel { ref ptr_id, .. } => Some(*ptr_id),
+                        InputState::MarqueeSelecting { ref ptr_id, .. } => Some(*ptr_id),
                         InputState::Idle => None,
                     }
                 };
                 if let Some(pid) = active_ptr_id {
-                    if *pid == e.pointer_id() {
+                    if pid == e.pointer_id() {
                         app.borrow_mut().on_pointer_cancel(&e);
                     }
                 }
@@ -334,7 +361,12 @@ impl WebRuntime {
                 }
             })
         };
-        Self::reg_generic(&mut listeners, document.clone().into(), "visibilitychange", on_visibility)?;
+        Self::reg_generic(
+            &mut listeners,
+            document.clone().into(),
+            "visibilitychange",
+            on_visibility,
+        )?;
 
         // -----------------------------------------------------------------------
         // Toolbar: tool buttons
@@ -366,7 +398,10 @@ impl WebRuntime {
         // Action buttons
         // -----------------------------------------------------------------------
 
-        let mut reg_simple_btn = |id: &str, action: Rc<dyn Fn() + 'static>, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
+        let reg_simple_btn = |id: &str,
+                              action: Rc<dyn Fn() + 'static>,
+                              listeners_ref: &mut Vec<Listener>|
+         -> Result<(), JsValue> {
             if let Some(el) = document.get_element_by_id(id) {
                 let target = el.dyn_into::<web_sys::EventTarget>()?;
                 let act = Rc::clone(&action);
@@ -378,35 +413,59 @@ impl WebRuntime {
             Ok(())
         };
 
-        reg_simple_btn("btn-undo", Rc::new({
-            let app = Rc::clone(&app);
-            move || app.borrow_mut().action_undo()
-        }), &mut listeners)?;
+        reg_simple_btn(
+            "btn-undo",
+            Rc::new({
+                let app = Rc::clone(&app);
+                move || app.borrow_mut().action_undo()
+            }),
+            &mut listeners,
+        )?;
 
-        reg_simple_btn("btn-redo", Rc::new({
-            let app = Rc::clone(&app);
-            move || app.borrow_mut().action_redo()
-        }), &mut listeners)?;
+        reg_simple_btn(
+            "btn-redo",
+            Rc::new({
+                let app = Rc::clone(&app);
+                move || app.borrow_mut().action_redo()
+            }),
+            &mut listeners,
+        )?;
 
-        reg_simple_btn("btn-clear", Rc::new({
-            let app = Rc::clone(&app);
-            move || app.borrow_mut().action_clear()
-        }), &mut listeners)?;
+        reg_simple_btn(
+            "btn-clear",
+            Rc::new({
+                let app = Rc::clone(&app);
+                move || app.borrow_mut().action_clear()
+            }),
+            &mut listeners,
+        )?;
 
-        reg_simple_btn("btn-save", Rc::new({
-            let app = Rc::clone(&app);
-            move || app.borrow_mut().action_save()
-        }), &mut listeners)?;
+        reg_simple_btn(
+            "btn-save",
+            Rc::new({
+                let app = Rc::clone(&app);
+                move || app.borrow_mut().action_save()
+            }),
+            &mut listeners,
+        )?;
 
-        reg_simple_btn("btn-export-svg", Rc::new({
-            let app = Rc::clone(&app);
-            move || app.borrow_mut().action_export_svg()
-        }), &mut listeners)?;
+        reg_simple_btn(
+            "btn-export-svg",
+            Rc::new({
+                let app = Rc::clone(&app);
+                move || app.borrow_mut().action_export_svg()
+            }),
+            &mut listeners,
+        )?;
 
-        reg_simple_btn("btn-export-png", Rc::new({
-            let app = Rc::clone(&app);
-            move || app.borrow_mut().action_export_png()
-        }), &mut listeners)?;
+        reg_simple_btn(
+            "btn-export-png",
+            Rc::new({
+                let app = Rc::clone(&app);
+                move || app.borrow_mut().action_export_png()
+            }),
+            &mut listeners,
+        )?;
 
         // -----------------------------------------------------------------------
         // Settings button
@@ -805,7 +864,10 @@ impl WebRuntime {
             let app = Rc::clone(&app);
             let target = el.dyn_into::<web_sys::EventTarget>()?;
             let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
-                if let Some(target) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
+                if let Some(target) = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
+                {
                     if let Ok(w) = target.value().parse::<f32>() {
                         app.borrow_mut().set_selection_width_preview(w);
                     }
@@ -814,7 +876,11 @@ impl WebRuntime {
             Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
 
-        let reg_sel_width_commit = |el: Element, app: Rc<RefCell<StonepenApp>>, event_type: &str, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
+        let reg_sel_width_commit = |el: Element,
+                                    app: Rc<RefCell<StonepenApp>>,
+                                    event_type: &str,
+                                    listeners_ref: &mut Vec<Listener>|
+         -> Result<(), JsValue> {
             let target = el.dyn_into::<web_sys::EventTarget>()?;
             let cb = Closure::<dyn FnMut(Event)>::new({
                 let app = Rc::clone(&app);
@@ -828,7 +894,6 @@ impl WebRuntime {
                 target,
                 event_type: event_type.to_string(),
                 callback,
-                options: None,
                 _closure: Box::new(cb),
             });
             Ok(())
@@ -844,7 +909,10 @@ impl WebRuntime {
             let app = Rc::clone(&app);
             let target = el.dyn_into::<web_sys::EventTarget>()?;
             let cb = Closure::<dyn FnMut(Event)>::new(move |e: Event| {
-                if let Some(target) = e.target().and_then(|t| t.dyn_into::<HtmlInputElement>().ok()) {
+                if let Some(target) = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
+                {
                     let hex = target.value();
                     if hex.len() >= 7 {
                         if let (Ok(r), Ok(g), Ok(b)) = (
@@ -860,7 +928,11 @@ impl WebRuntime {
             Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
 
-        let reg_sel_color_commit = |el: Element, app: Rc<RefCell<StonepenApp>>, event_type: &str, listeners_ref: &mut Vec<Listener>| -> Result<(), JsValue> {
+        let reg_sel_color_commit = |el: Element,
+                                    app: Rc<RefCell<StonepenApp>>,
+                                    event_type: &str,
+                                    listeners_ref: &mut Vec<Listener>|
+         -> Result<(), JsValue> {
             let target = el.dyn_into::<web_sys::EventTarget>()?;
             let cb = Closure::<dyn FnMut(Event)>::new({
                 let app = Rc::clone(&app);
@@ -874,7 +946,6 @@ impl WebRuntime {
                 target,
                 event_type: event_type.to_string(),
                 callback,
-                options: None,
                 _closure: Box::new(cb),
             });
             Ok(())

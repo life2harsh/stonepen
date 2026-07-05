@@ -23,6 +23,18 @@ pub fn mount_stonepen(canvas_id: &str) -> Result<StonepenHandle, JsValue> {
     })
 }
 
+fn make_err(msg: &str) -> JsValue {
+    #[cfg(target_arch = "wasm32")]
+    {
+        JsValue::from_str(msg)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = msg;
+        JsValue::null()
+    }
+}
+
 #[wasm_bindgen]
 impl StonepenHandle {
     pub fn destroy(&mut self) {
@@ -36,7 +48,7 @@ impl StonepenHandle {
             runtime.app.borrow_mut().action_load(json);
             Ok(())
         } else {
-            Err(JsValue::from_str("Stonepen handle is destroyed"))
+            Err(make_err("Stonepen handle is destroyed"))
         }
     }
 
@@ -47,9 +59,9 @@ impl StonepenHandle {
                 .borrow()
                 .session
                 .export_json()
-                .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+                .map_err(|e| make_err(&format!("{:?}", e)))
         } else {
-            Err(JsValue::from_str("Stonepen handle is destroyed"))
+            Err(make_err("Stonepen handle is destroyed"))
         }
     }
 
