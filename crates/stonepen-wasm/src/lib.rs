@@ -7,147 +7,99 @@ mod render_2d;
 mod web_runtime;
 mod web_ui;
 
-use app::StonepenApp;
 use wasm_bindgen::prelude::*;
-use web_sys::{KeyboardEvent, PointerEvent, WheelEvent};
+use web_runtime::WebRuntime;
 
-/// Bootstrap entry point. JavaScript only needs to call this.
-/// Creates WebRuntime (owns all event closures and app state)
-/// and intentionally leaks it for the page lifetime.
 #[wasm_bindgen]
-pub fn start_stonepen(canvas_id: &str) -> Result<(), JsValue> {
-    let runtime = web_runtime::WebRuntime::new(canvas_id)?;
-    // Intentional page-lifetime leak: the runtime owns all closures and the app.
-    std::mem::forget(runtime);
-    Ok(())
+pub struct StonepenHandle {
+    runtime: Option<WebRuntime>,
 }
 
 #[wasm_bindgen]
-pub struct WasmApp {
-    inner: StonepenApp,
+pub fn mount_stonepen(canvas_id: &str) -> Result<StonepenHandle, JsValue> {
+    let runtime = WebRuntime::new(canvas_id)?;
+    Ok(StonepenHandle {
+        runtime: Some(runtime),
+    })
 }
 
 #[wasm_bindgen]
-impl WasmApp {
-    #[wasm_bindgen(constructor)]
-    pub fn new(canvas_id: &str) -> Result<WasmApp, JsValue> {
-        let inner = StonepenApp::new(canvas_id)?;
-        Ok(WasmApp { inner })
+impl StonepenHandle {
+    pub fn destroy(&mut self) {
+        if let Some(mut runtime) = self.runtime.take() {
+            runtime.destroy();
+        }
     }
 
-    pub fn on_pointer_down(&mut self, e: PointerEvent) {
-        self.inner.on_pointer_down(&e);
+    pub fn load_json(&mut self, json: &str) -> Result<(), JsValue> {
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().action_load(json);
+            Ok(())
+        } else {
+            Err(JsValue::from_str("Stonepen handle is destroyed"))
+        }
     }
 
-    pub fn on_pointer_move(&mut self, e: PointerEvent) {
-        self.inner.on_pointer_move(&e);
+    pub fn export_json(&self) -> Result<String, JsValue> {
+        if let Some(ref runtime) = self.runtime {
+            runtime
+                .app
+                .borrow()
+                .session
+                .export_json()
+                .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+        } else {
+            Err(JsValue::from_str("Stonepen handle is destroyed"))
+        }
     }
 
-    pub fn on_pointer_up(&mut self, e: PointerEvent) {
-        self.inner.on_pointer_up(&e);
+    pub fn undo(&mut self) {
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().action_undo();
+        }
     }
 
-    pub fn on_pointer_cancel(&mut self, e: PointerEvent) {
-        self.inner.on_pointer_cancel(&e);
+    pub fn redo(&mut self) {
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().action_redo();
+        }
     }
 
-    pub fn on_wheel(&mut self, e: WheelEvent) {
-        self.inner.on_wheel(&e);
+    pub fn set_tool(&mut self, tool_id: &str) {
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().set_tool(tool_id);
+        }
     }
 
-    pub fn on_key_down(&mut self, e: KeyboardEvent) {
-        self.inner.on_key_down(&e);
-    }
-
-    pub fn on_key_up(&mut self, e: KeyboardEvent) {
-        self.inner.on_key_up(&e);
-    }
-
-    pub fn on_blur(&mut self) {
-        self.inner.on_blur();
-    }
-
-    pub fn reset_transient_input(&mut self) {
-        self.inner.reset_transient_input();
-    }
-
-    pub fn get_shortcuts_json(&self) -> String {
-        self.inner.get_shortcuts_json()
-    }
-
-    pub fn start_capture(&mut self, command_id: &str) {
-        self.inner.start_capture(command_id);
-    }
-
-    pub fn cancel_capture(&mut self) {
-        self.inner.cancel_capture();
-    }
-
-    pub fn is_capturing(&self) -> bool {
-        self.inner.is_capturing()
-    }
-
-    pub fn capturing_label(&self) -> String {
-        self.inner.capturing_label()
-    }
-
-    pub fn remove_shortcut_binding(&mut self, command_id: &str, index: usize) {
-        self.inner.remove_shortcut_binding(command_id, index);
-    }
-
-    pub fn reset_shortcuts_to_defaults(&mut self) {
-        self.inner.reset_shortcuts_to_defaults();
-    }
-
-    pub fn set_tool(&mut self, tool: &str) {
-        self.inner.set_tool(tool);
+    pub fn set_brush_width(&mut self, width: f32) {
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().set_brush_width(width);
+        }
     }
 
     pub fn set_brush_color(&mut self, r: u8, g: u8, b: u8) {
-        self.inner.set_brush_color(r, g, b);
-    }
-
-    pub fn set_brush_width(&mut self, w: f32) {
-        self.inner.set_brush_width(w);
-    }
-
-    pub fn action_undo(&mut self) {
-        self.inner.action_undo();
-    }
-
-    pub fn action_redo(&mut self) {
-        self.inner.action_redo();
-    }
-
-    pub fn action_clear(&mut self) {
-        self.inner.action_clear();
-    }
-
-    pub fn action_save(&mut self) {
-        self.inner.action_save();
-    }
-
-    pub fn action_load(&mut self, json: &str) {
-        self.inner.action_load(json);
-    }
-
-    pub fn action_export_svg(&mut self) {
-        self.inner.action_export_svg();
-    }
-
-    pub fn action_export_png(&mut self) {
-        self.inner.action_export_png();
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().set_brush_color(r, g, b);
+        }
     }
 
     pub fn resize(&mut self) {
-        self.inner.resize();
+        if let Some(ref mut runtime) = self.runtime {
+            runtime.app.borrow_mut().resize();
+        }
     }
 
     pub fn redraw(&self) {
-        self.inner.redraw();
+        if let Some(ref runtime) = self.runtime {
+            runtime.app.borrow().redraw();
+        }
     }
 
-    pub fn paste_image(&mut self, bytes: &[u8], mime: &str, width_px: u32, height_px: u32) {
-        self.inner.paste_image(bytes, mime, width_px, height_px);
+    pub fn is_dirty(&self) -> bool {
+        if let Some(ref runtime) = self.runtime {
+            runtime.app.borrow().session.dirty
+        } else {
+            false
+        }
     }
 }
