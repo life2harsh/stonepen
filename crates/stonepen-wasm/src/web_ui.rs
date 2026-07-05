@@ -1,8 +1,3 @@
-/// WebUi — DOM synchronization layer.
-///
-/// Owns all DOM element references needed by the Stonepen UI.
-/// Reads application state from StonepenApp and writes to DOM.
-/// Does not own application logic.
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::{Document, Element, HtmlElement, HtmlInputElement, Window};
@@ -30,10 +25,6 @@ impl WebUi {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Brush controls synchronization
-    // -----------------------------------------------------------------------
-
     pub fn sync_brush_controls(&self, brush: &Brush) {
         if let Some(el) = self.document.get_element_by_id("width-slider") {
             if let Ok(input) = el.dyn_into::<HtmlInputElement>() {
@@ -46,10 +37,6 @@ impl WebUi {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Toolbar synchronization
-    // -----------------------------------------------------------------------
 
     pub fn sync_tool_buttons(&self, active_tool_name: &str) {
         let btns = [
@@ -91,10 +78,6 @@ impl WebUi {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Cursor
-    // -----------------------------------------------------------------------
-
     pub fn set_cursor(&self, cursor_str: &str) {
         if let Some(canvas) = self.document.get_element_by_id(&self.canvas_id) {
             if let Ok(html_canvas) = canvas.dyn_into::<web_sys::HtmlCanvasElement>() {
@@ -102,10 +85,6 @@ impl WebUi {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Status bar
-    // -----------------------------------------------------------------------
 
     pub fn update_status(&self, app: &StonepenApp) {
         use stonepen_core::session::Tool;
@@ -134,10 +113,6 @@ impl WebUi {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Settings modal
-    // -----------------------------------------------------------------------
-
     pub fn open_settings(&self) {
         if let Some(modal) = self.document.get_element_by_id("settings-modal") {
             let _ = modal.class_list().add_1("show");
@@ -156,10 +131,6 @@ impl WebUi {
         }
         false
     }
-
-    // -----------------------------------------------------------------------
-    // Shortcut table rendering
-    // -----------------------------------------------------------------------
 
     pub fn render_shortcuts(&self, app: &StonepenApp) {
         let container = match self.document.get_element_by_id("shortcuts-table-container") {
@@ -243,7 +214,6 @@ impl WebUi {
         ];
 
         for group in &groups {
-            // Group heading
             if let Ok(h4) = self.document.create_element("h4") {
                 h4.set_text_content(Some(group.name));
                 let _ = h4
@@ -261,21 +231,18 @@ impl WebUi {
                     let _ = row.set_attribute("class", "shortcut-row");
                     let _ = row.set_attribute("data-cmd", cmd.to_id());
 
-                    // Label
                     if let Ok(label_el) = self.document.create_element("div") {
                         let _ = label_el.set_attribute("class", "shortcut-label");
                         label_el.set_text_content(Some(cmd.label()));
                         let _ = row.append_child(&label_el);
                     }
 
-                    // Bindings
                     if let Ok(bindings_div) = self.document.create_element("div") {
                         let _ = bindings_div.set_attribute("class", "shortcut-bindings");
                         for (idx, chord) in chords.iter().enumerate() {
                             if let Ok(badge) = self.document.create_element("span") {
                                 let _ = badge.set_attribute("class", "shortcut-badge");
                                 let display = chord.to_display_string(is_mac);
-                                // We'll put the text + remove btn inside
                                 if let Ok(text_node) = self.document.create_element("span") {
                                     text_node.set_text_content(Some(&display));
                                     let _ = badge.append_child(&text_node);
@@ -284,7 +251,6 @@ impl WebUi {
                                     let _ =
                                         remove_btn.set_attribute("class", "shortcut-badge-remove");
                                     remove_btn.set_inner_html("&times;");
-                                    // data-cmd and data-idx so the click handler can look it up
                                     let _ = remove_btn.set_attribute("data-cmd", cmd.to_id());
                                     let _ = remove_btn.set_attribute("data-idx", &idx.to_string());
                                     let _ = badge.append_child(&remove_btn);
@@ -295,7 +261,6 @@ impl WebUi {
                         let _ = row.append_child(&bindings_div);
                     }
 
-                    // Add/Bind button
                     if let Ok(actions_div) = self.document.create_element("div") {
                         let _ = actions_div.set_attribute("class", "shortcut-actions");
                         if let Ok(add_btn) = self.document.create_element("button") {
@@ -316,7 +281,6 @@ impl WebUi {
             }
         }
 
-        // Sync capture overlay
         self.sync_capture_overlay(app);
     }
 
@@ -340,10 +304,6 @@ impl WebUi {
         let _ = self.window.alert_with_message(&msg);
     }
 
-    // -----------------------------------------------------------------------
-    // Brush controls (read from DOM inputs)
-    // -----------------------------------------------------------------------
-
     pub fn read_brush_width(&self) -> Option<f32> {
         self.document
             .get_element_by_id("width-slider")
@@ -358,10 +318,6 @@ impl WebUi {
             .map(|input| input.value())
     }
 
-    // -----------------------------------------------------------------------
-    // Focus canvas
-    // -----------------------------------------------------------------------
-
     pub fn focus_canvas(&self) {
         if let Some(el) = self.document.get_element_by_id(&self.canvas_id) {
             if let Ok(html) = el.dyn_into::<HtmlElement>() {
@@ -369,10 +325,6 @@ impl WebUi {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Load input (hidden file input)
-    // -----------------------------------------------------------------------
 
     pub fn trigger_load_input_click(&self) {
         if let Some(el) = self.document.get_element_by_id("load-input") {
@@ -389,10 +341,6 @@ impl WebUi {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Element queries used by event wiring
-    // -----------------------------------------------------------------------
 
     pub fn get_element(&self, id: &str) -> Option<Element> {
         self.document.get_element_by_id(id)

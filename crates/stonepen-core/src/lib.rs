@@ -1706,7 +1706,6 @@ mod tests {
             }),
         );
 
-        // Select image, draw first stroke (attached)
         session.doc.clear_sel();
         session.doc.runtime.sel_items.insert(img_id);
         let target1 = session.doc.annotation_target_image();
@@ -1730,13 +1729,11 @@ mod tests {
             .doc
             .add_item(session.doc.active_layer_id, InkItem::Stroke(kid1));
 
-        // Move the image
         if let Some(InkItem::Image(img)) = session.doc.get_item_mut(img_id) {
             img.xform = Xform2D::translate(100.0, 100.0);
         }
         session.doc.rebuild_runtime();
 
-        // Draw second stroke (should still resolve target to img_id!)
         let target2 = session.doc.annotation_target_image();
         assert_eq!(target2, Some(img_id));
 
@@ -1758,13 +1755,11 @@ mod tests {
             .doc
             .add_item(session.doc.active_layer_id, InkItem::Stroke(kid2));
 
-        // Move the image again
         if let Some(InkItem::Image(img)) = session.doc.get_item_mut(img_id) {
             img.xform = Xform2D::translate(200.0, 200.0);
         }
         session.doc.rebuild_runtime();
 
-        // Both strokes should be translated with the parent
         let eff1 = session.doc.effective_xform(kid1_id);
         let eff2 = session.doc.effective_xform(kid2_id);
         assert_eq!(eff1, Xform2D::translate(200.0, 200.0));
@@ -1777,17 +1772,10 @@ mod tests {
         let s_pts = vec![make_ink_point(10.0, 10.0), make_ink_point(30.0, 10.0)];
         let sid = make_stroke_in_doc(&mut doc, s_pts);
 
-        // 1. Rect selects stroke with point inside
-        let rect1 = BBox::new(5.0, 5.0, 15.0, 15.0);
-        let sel1 = select_rect(&mut doc, rect1);
-        assert_eq!(sel1, vec![sid.into()]);
-
-        // 2. Rect selects stroke whose segment crosses rect (but no points inside)
         let rect2 = BBox::new(15.0, 5.0, 25.0, 15.0);
         let sel2 = select_rect(&mut doc, rect2);
         assert_eq!(sel2, vec![sid.into()]);
 
-        // 3. Rect does not select separate stroke
         let rect3 = BBox::new(40.0, 40.0, 50.0, 50.0);
         let sel3 = select_rect(&mut doc, rect3);
         assert!(sel3.is_empty());
@@ -1799,19 +1787,16 @@ mod tests {
         let s_pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 0.0)];
         let sid = make_stroke_in_doc(&mut doc, s_pts);
 
-        // Transform the stroke (move to 100, 100)
         if let Some(InkItem::Stroke(s)) = doc.get_item_mut(sid.into()) {
             s.xform = Xform2D::translate(100.0, 100.0);
             s.recompute_world_bbox();
         }
         doc.rebuild_runtime();
 
-        // 1. Rect at original pos does not select it anymore
         let rect_orig = BBox::new(-5.0, -5.0, 15.0, 15.0);
         let sel_orig = select_rect(&mut doc, rect_orig);
         assert!(sel_orig.is_empty());
 
-        // 2. Rect at new pos selects it
         let rect_new = BBox::new(95.0, 95.0, 115.0, 115.0);
         let sel_new = select_rect(&mut doc, rect_new);
         assert_eq!(sel_new, vec![sid.into()]);
@@ -1855,7 +1840,6 @@ mod tests {
         doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
         doc.rebuild_runtime();
 
-        // The effective position of the stroke is img.xform * stroke.xform = (50, 50) + (10, 10) = (60, 60)
         let rect = BBox::new(55.0, 55.0, 65.0, 65.0);
         let sel = select_rect(&mut doc, rect);
         assert!(sel.contains(&stroke_id.into()));
@@ -1882,12 +1866,10 @@ mod tests {
         doc.add_item(doc.active_layer_id, InkItem::Image(img));
         doc.rebuild_runtime();
 
-        // 1. Rect intersects axis-aligned image
         let rect1 = BBox::new(150.0, 150.0, 250.0, 250.0);
         let sel1 = select_rect(&mut doc, rect1);
         assert_eq!(sel1, vec![img_id]);
 
-        // 2. Rect does not intersect separate image
         let rect2 = BBox::new(300.0, 300.0, 400.0, 400.0);
         let sel2 = select_rect(&mut doc, rect2);
         assert!(sel2.is_empty());
@@ -1897,7 +1879,6 @@ mod tests {
     fn test_select_rect_rotated_image() {
         let mut doc = InkDoc::new(800.0, 600.0);
         let aid = AssetId::new();
-        // A 10x10 image rotated 45 degrees
         let xf = Xform2D::rotate_about(Point2::new(5.0, 5.0), std::f32::consts::FRAC_PI_4);
         let img = InkImage {
             id: ItemId::new(),
@@ -1916,7 +1897,6 @@ mod tests {
         doc.add_item(doc.active_layer_id, InkItem::Image(img));
         doc.rebuild_runtime();
 
-        // Rect intersects the rotated image corner
         let rect = BBox::new(9.0, 5.0, 15.0, 15.0);
         let sel = select_rect(&mut doc, rect);
         assert_eq!(sel, vec![img_id]);
@@ -1925,15 +1905,9 @@ mod tests {
     #[test]
     fn test_select_rect_broad_phase_refinement() {
         let mut doc = InkDoc::new(800.0, 600.0);
-        // A stroke inside BBox but not intersecting the exact polygon
-        // A diagonal stroke from (0,0) to (10,10)
         let s_pts = vec![make_ink_point(0.0, 0.0), make_ink_point(10.0, 10.0)];
         let _sid = make_stroke_in_doc(&mut doc, s_pts);
 
-        // A marquee rectangle at (0, 8, 2, 10).
-        // The stroke BBox is (0,0,10,10), which intersects the marquee (0, 8, 2, 10).
-        // But the stroke line segment itself does NOT cross or enter (0, 8, 2, 10) because
-        // on the line y = x, when x is between 0 and 2, y is between 0 and 2, which is far from y in [8, 10].
         let rect = BBox::new(0.0, 8.0, 2.0, 10.0);
         let sel = select_rect(&mut doc, rect);
         assert!(
@@ -1980,14 +1954,12 @@ mod tests {
         doc.add_item(doc.active_layer_id, InkItem::Stroke(stroke));
         doc.rebuild_runtime();
 
-        // 1. Select both image and stroke -> transform roots should only contain image_id (prevents double transform)
         let rect_both = BBox::new(40.0, 40.0, 160.0, 160.0);
         select_rect(&mut doc, rect_both);
         let roots = doc.transform_roots();
         assert!(roots.contains(&img_id));
         assert!(!roots.contains(&stroke_id.into()));
 
-        // 2. Select only the child stroke -> transform roots should contain stroke_id
         doc.clear_sel();
         doc.runtime.sel_items.insert(stroke_id.into());
         let roots_child = doc.transform_roots();
@@ -1998,7 +1970,6 @@ mod tests {
     #[test]
     fn test_shortcuts_default_map_no_conflicts() {
         let sm = ShortcutMap::defaults();
-        // Ensure no overlapping chords
         let mut seen = std::collections::HashSet::new();
         for (cmd, chords) in &sm.map {
             for chord in chords {
@@ -2016,25 +1987,21 @@ mod tests {
     fn test_shortcuts_resolutions() {
         let sm = ShortcutMap::defaults();
 
-        // Primary+Z resolves Undo
         assert_eq!(
             sm.command_for_chord(&KeyChord::primary("KeyZ")),
             Some(Command::Undo)
         );
 
-        // Primary+Shift+Z resolves Redo
         assert_eq!(
             sm.command_for_chord(&KeyChord::primary_shift("KeyZ")),
             Some(Command::Redo)
         );
 
-        // Primary+Y resolves Redo
         assert_eq!(
             sm.command_for_chord(&KeyChord::primary("KeyY")),
             Some(Command::Redo)
         );
 
-        // Delete and Backspace both resolve DeleteSelection
         assert_eq!(
             sm.command_for_chord(&KeyChord::simple("Delete")),
             Some(Command::DeleteSelection)
@@ -2058,7 +2025,6 @@ mod tests {
         let bindings = sm.bindings(Command::Undo);
         assert_eq!(bindings.len(), 2);
 
-        // Remove one binding, other remains
         assert!(sm.remove_binding(Command::Undo, &KeyChord::simple("KeyU")));
         let bindings_after = sm.bindings(Command::Undo);
         assert_eq!(bindings_after.len(), 1);
@@ -2072,7 +2038,6 @@ mod tests {
             .add_binding(Command::Undo, KeyChord::simple("KeyZ"))
             .is_ok());
 
-        // Attempting to assign same chord to Redo should fail and return conflict
         let res = sm.add_binding(Command::Redo, KeyChord::simple("KeyZ"));
         assert_eq!(res, Err(ConflictError::Conflict(Command::Undo)));
     }
@@ -2087,7 +2052,6 @@ mod tests {
     #[test]
     fn test_shortcuts_settings_json_round_trip() {
         let mut settings = AppSettings::new();
-        // Modify a binding to check persistence
         settings.shortcuts.map.clear();
         settings
             .shortcuts
@@ -2098,7 +2062,6 @@ mod tests {
         let deserialized: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, settings);
 
-        // Verify command string IDs are stable
         assert!(json.contains("\"undo\""));
         assert!(!json.contains("\"Undo\""));
     }
@@ -2106,7 +2069,6 @@ mod tests {
     #[test]
     fn test_shortcuts_validation_and_repair() {
         let mut settings = AppSettings::new();
-        // Introduce conflict and modifier-only manually to map
         settings.shortcuts.map.insert(
             Command::Undo,
             vec![
@@ -2123,7 +2085,6 @@ mod tests {
 
         settings.validate_and_repair();
 
-        // Verify only clean bindings remain
         let undo_chords = settings.shortcuts.bindings(Command::Undo);
         assert_eq!(undo_chords.len(), 1);
         assert_eq!(undo_chords[0], KeyChord::simple("KeyZ"));
@@ -2139,7 +2100,6 @@ mod tests {
     fn test_command_all_completeness() {
         use std::collections::HashSet;
         let all_set: HashSet<&str> = Command::ALL.iter().map(|c| c.to_id()).collect();
-        // Verify all known commands appear exactly once
         let expected = [
             "tool_pen",
             "tool_pencil",
@@ -2175,7 +2135,6 @@ mod tests {
 
     #[test]
     fn test_shortcuts_stable_ordering() {
-        // Command::ALL is the single source of truth for ordering
         assert_eq!(Command::ALL.len(), 25);
         assert_eq!(Command::ALL[0].to_id(), "tool_pen");
         assert_eq!(Command::ALL[24].to_id(), "hold_pan");
@@ -2195,7 +2154,6 @@ mod tests {
 
         settings.validate_and_repair();
 
-        // Undo is earlier in stable order than Redo, so Undo must keep KeyZ, and Redo must lose it.
         assert_eq!(settings.shortcuts.bindings(Command::Undo).len(), 1);
         assert_eq!(
             settings.shortcuts.bindings(Command::Undo)[0],
@@ -2222,7 +2180,6 @@ mod tests {
             !AppSettings::is_version_supported(999),
             "version 999 must be rejected"
         );
-        // Default settings have supported version
         let s = AppSettings::new();
         assert!(AppSettings::is_version_supported(s.version));
     }
@@ -2232,38 +2189,29 @@ mod tests {
         let mut ctrl = TempPanController::new();
         assert!(!ctrl.is_active());
 
-        // 1. Keydown activates temporary Pan while idle
         assert!(ctrl.handle_keydown("Space", true));
         assert!(ctrl.is_active());
 
-        // 2. Repeated keydown does not reactivate
         assert!(!ctrl.handle_keydown("Space", true));
 
-        // 3. Keyup while idle restores tool (deactivates)
         assert!(ctrl.handle_keyup("Space", false));
         assert!(!ctrl.is_active());
 
-        // 4. Keydown during active drawing (non-pan gesture) is ignored
         assert!(!ctrl.handle_keydown("Space", false));
         assert!(!ctrl.is_active());
 
-        // 5. Keyup during active Pan drag sets release pending
         assert!(ctrl.handle_keydown("Space", true));
         assert!(!ctrl.handle_keyup("Space", true));
         assert!(ctrl.is_active());
         assert!(ctrl.released);
 
-        // 6. Pointerup after pending release clears temporary Pan
         assert!(ctrl.handle_gesture_end());
         assert!(!ctrl.is_active());
 
-        // 7. Blur clears temporary Pan
         assert!(ctrl.handle_keydown("Space", true));
         ctrl.reset();
         assert!(!ctrl.is_active());
     }
-
-    // --- 49 REAL EDITING FEATURE TESTS ---
 
     #[derive(Clone)]
     struct TestNudgeState {
@@ -2294,7 +2242,6 @@ mod tests {
         }
     }
 
-    // 1-3. Selection marquee/lasso intents
     #[test]
     fn test_editing_01_intent_replace() {
         let mut doc = InkDoc::new(800.0, 600.0);
@@ -2328,7 +2275,6 @@ mod tests {
         assert!(doc.runtime.sel_items.contains(&s2));
     }
 
-    // 4-10. Copy commands: layer order, parent-attached auto-copy, parent+child non-duplication
     #[test]
     fn test_editing_04_copy_empty() {
         let session = InkSession::new(800.0, 600.0);
@@ -2344,7 +2290,6 @@ mod tests {
         session.doc.rebuild_runtime();
 
         let s1 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
-        // switch active layer to Layer 2
         session.doc.active_layer_id = new_layer_id;
         let s2 = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(2.0, 2.0)]);
         session.doc.runtime.sel_items.insert(s1);
@@ -2522,7 +2467,6 @@ mod tests {
         assert_eq!(bundle.records[0].source_idx, 1);
     }
 
-    // 11-15. Parent-less child-only standalone bakes with world-coordinates
     #[test]
     fn test_editing_11_standalone_bake_detaches_parent() {
         let mut session = InkSession::new(800.0, 600.0);
@@ -2695,7 +2639,6 @@ mod tests {
         assert_eq!(bundle.source_origin.x, 10.0);
     }
 
-    // 16-20. Paste remapping: active-layer fallback target selection, root target selection, single transaction undo-revert
     #[test]
     fn test_editing_16_paste_remaps_ids() {
         let mut session = InkSession::new(800.0, 600.0);
@@ -2869,7 +2812,6 @@ mod tests {
         assert_eq!(session.doc.layers[0].items.len(), 0);
     }
 
-    // 21-25. Asset collision and mapping redirects
     #[test]
     fn test_editing_21_asset_properties_match() {
         let mut session = InkSession::new(800.0, 600.0);
@@ -2995,7 +2937,6 @@ mod tests {
         assert!(session.doc.assets.iter().any(|a| a.id == asset_id));
     }
 
-    // 26-29. Cut operations
     #[test]
     fn test_editing_26_cut_returns_copied_bundle() {
         let mut session = InkSession::new(800.0, 600.0);
@@ -3035,7 +2976,6 @@ mod tests {
         assert_eq!(session.doc.layers[0].items[0].id(), s2);
     }
 
-    // 30-34. Nudge active transactions and arrow-key repeat coalescing
     #[test]
     fn test_editing_30_nudge_creates_no_tx_initially() {
         let mut session = InkSession::new(800.0, 600.0);
@@ -3049,7 +2989,6 @@ mod tests {
         let mut session = InkSession::new(800.0, 600.0);
         let s = make_stroke_in_doc(&mut session.doc, vec![make_ink_point(1.0, 1.0)]);
         session.doc.runtime.sel_items.insert(s);
-        // We simulate a nudge by transforming items manually in local space
         let item = session.doc.get_item_mut(s).unwrap();
         item.set_xform(Xform2D::translate(5.0, 0.0));
         assert_eq!(session.doc.get_item(s).unwrap().xform().tx, 5.0);
@@ -3068,14 +3007,12 @@ mod tests {
             before_xforms,
         };
 
-        // Apply transform
         session
             .doc
             .get_item_mut(s)
             .unwrap()
             .set_xform(Xform2D::translate(1.0, 0.0));
 
-        // Finalize nudge
         let mut state_opt = Some(nudge_state);
         test_commit_nudge(&mut session, &mut state_opt);
 
@@ -3130,7 +3067,6 @@ mod tests {
         assert_eq!(session.undo_redo.undo_stack.len(), 0);
     }
 
-    // 35-41. Z-order layers forward/backward/front/back validation
     #[test]
     fn test_editing_35_z_order_bring_forward() {
         let mut session = InkSession::new(800.0, 600.0);
@@ -3379,7 +3315,6 @@ mod tests {
         assert_eq!(ids, vec![id2, id4, id1, id3]); // id1 and id3 moved to front, keeping relative order
     }
 
-    // 42-49. Z-order commands rejection rules for missing/duplicated order structures
     #[test]
     fn test_editing_42_reorder_rejects_missing_element() {
         let mut doc = InkDoc::new(800.0, 600.0);

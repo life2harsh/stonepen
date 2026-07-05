@@ -272,7 +272,6 @@ impl Renderer {
                             if entry.img.complete() {
                                 let _ = self.ctx.save();
                                 let m = img.xform;
-                                // Convert world xform to screen coordinates and apply
                                 let sp = vp.world_to_screen(Point2::new(m.tx, m.ty));
                                 let s_scale = vp.zoom;
                                 let _ = self.ctx.translate(sp.x as f64, sp.y as f64);
@@ -294,7 +293,6 @@ impl Renderer {
                                 );
                                 let _ = self.ctx.restore();
                             } else {
-                                // Draw dashed placeholder while loading
                                 let corners = [
                                     img.xform.apply(Point2::new(0.0, 0.0)),
                                     img.xform.apply(Point2::new(img.width, 0.0)),

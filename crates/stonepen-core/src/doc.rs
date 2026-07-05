@@ -505,9 +505,6 @@ impl InkDoc {
         best_id
     }
 
-    /// Reorder items within a single layer to match the given ID sequence.
-    /// The `new_order` must contain exactly the same set of ItemIds as the
-    /// current layer without duplicates or omissions.
     pub fn reorder_items_in_layer(
         &mut self,
         layer_id: LayerId,
@@ -519,7 +516,6 @@ impl InkDoc {
         };
         let layer = &self.layers[li];
 
-        // 1. Length check
         if new_order.len() != layer.items.len() {
             return Err(crate::session::InkError::InvalidReorder(format!(
                 "Length mismatch: new order has {}, layer has {}",
@@ -528,7 +524,6 @@ impl InkDoc {
             )));
         }
 
-        // 2. Presence & duplicate check
         let mut existing_ids = std::collections::HashSet::new();
         for item in &layer.items {
             existing_ids.insert(item.id());
@@ -550,7 +545,6 @@ impl InkDoc {
             }
         }
 
-        // Safe mutation phase
         let mut id_to_item: std::collections::HashMap<ItemId, InkItem> = self.layers[li]
             .items
             .drain(..)

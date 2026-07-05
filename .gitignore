@@ -1,3 +1,5 @@
 /target
 Cargo.lock
 /crates/stonepen-wasm/web
+AGENTS.md
+SKILLS.md

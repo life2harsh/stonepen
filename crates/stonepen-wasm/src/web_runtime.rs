@@ -1,12 +1,3 @@
-/// WebRuntime — browser event lifecycle owner.
-///
-/// Owns:
-/// - The StonepenApp (via Rc<RefCell<>>)
-/// - The WebUi
-/// - All registered event closures (must remain alive)
-/// - The ResizeObserver handle
-///
-/// Created by `mount_stonepen`. Owned by `StonepenHandle`.
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -27,7 +18,6 @@ struct Listener {
     target: web_sys::EventTarget,
     event_type: String,
     callback: js_sys::Function,
-    // Drop of _closure will automatically clean up/free the Wasm Closure.
     _closure: Box<dyn std::any::Any>,
 }
 
@@ -173,10 +163,6 @@ impl WebRuntime {
 
         let mut listeners = Vec::new();
 
-        // -----------------------------------------------------------------------
-        // Pointer events
-        // -----------------------------------------------------------------------
-
         let on_pointer_down = {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
@@ -276,10 +262,6 @@ impl WebRuntime {
             on_lost_pointer_capture,
         )?;
 
-        // -----------------------------------------------------------------------
-        // Keyboard events
-        // -----------------------------------------------------------------------
-
         fn is_editing_target(target: Option<web_sys::EventTarget>) -> bool {
             if let Some(t) = target {
                 if let Ok(el) = t.dyn_into::<Element>() {
@@ -368,10 +350,6 @@ impl WebRuntime {
             on_visibility,
         )?;
 
-        // -----------------------------------------------------------------------
-        // Toolbar: tool buttons
-        // -----------------------------------------------------------------------
-
         let tool_names = [
             "pen",
             "pencil",
@@ -393,10 +371,6 @@ impl WebRuntime {
                 Self::reg_generic(&mut listeners, target, "click", cb)?;
             }
         }
-
-        // -----------------------------------------------------------------------
-        // Action buttons
-        // -----------------------------------------------------------------------
 
         let reg_simple_btn = |id: &str,
                               action: Rc<dyn Fn() + 'static>,
@@ -467,10 +441,6 @@ impl WebRuntime {
             &mut listeners,
         )?;
 
-        // -----------------------------------------------------------------------
-        // Settings button
-        // -----------------------------------------------------------------------
-
         if let Some(el) = document.get_element_by_id("btn-settings") {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
@@ -534,10 +504,6 @@ impl WebRuntime {
             Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
-        // -----------------------------------------------------------------------
-        // Shortcuts table — delegated click handler
-        // -----------------------------------------------------------------------
-
         if let Some(container) = document.get_element_by_id("shortcuts-table-container") {
             let app = Rc::clone(&app);
             let ui = Rc::clone(&ui);
@@ -575,10 +541,6 @@ impl WebRuntime {
             Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
 
-        // -----------------------------------------------------------------------
-        // Load button — trigger hidden file input
-        // -----------------------------------------------------------------------
-
         if let Some(el) = document.get_element_by_id("btn-load") {
             let ui = Rc::clone(&ui);
             let target = el.dyn_into::<web_sys::EventTarget>()?;
@@ -587,10 +549,6 @@ impl WebRuntime {
             });
             Self::reg_generic(&mut listeners, target, "click", cb)?;
         }
-
-        // -----------------------------------------------------------------------
-        // File input change — FileReader
-        // -----------------------------------------------------------------------
 
         if let Some(el) = document.get_element_by_id("load-input") {
             let app = Rc::clone(&app);
@@ -642,10 +600,6 @@ impl WebRuntime {
             Self::reg_generic(&mut listeners, target, "change", cb)?;
         }
 
-        // -----------------------------------------------------------------------
-        // Brush controls
-        // -----------------------------------------------------------------------
-
         if let Some(el) = document.get_element_by_id("width-slider") {
             let app = Rc::clone(&app);
             let target = el.dyn_into::<web_sys::EventTarget>()?;
@@ -688,10 +642,6 @@ impl WebRuntime {
             });
             Self::reg_generic(&mut listeners, target, "input", cb)?;
         }
-
-        // -----------------------------------------------------------------------
-        // Paste
-        // -----------------------------------------------------------------------
 
         let on_paste = {
             let app = Rc::clone(&app);
@@ -834,10 +784,6 @@ impl WebRuntime {
         };
         Self::reg_clipboard(&mut listeners, window.clone().into(), "paste", on_paste)?;
 
-        // -----------------------------------------------------------------------
-        // Selection bar
-        // -----------------------------------------------------------------------
-
         let actions = [
             ("btn-sel-bring-forward", Command::BringForward),
             ("btn-sel-send-backward", Command::SendBackward),
@@ -957,10 +903,6 @@ impl WebRuntime {
             reg_sel_color_commit(el.clone(), Rc::clone(&app), "pointerup", &mut listeners)?;
         }
 
-        // -----------------------------------------------------------------------
-        // Wheel events (non-passive)
-        // -----------------------------------------------------------------------
-
         let on_wheel = {
             let app = Rc::clone(&app);
             Closure::<dyn FnMut(WheelEvent)>::new(move |e: WheelEvent| {
@@ -972,10 +914,6 @@ impl WebRuntime {
         opts.set_passive(false);
         Self::reg_wheel(&mut listeners, canvas_et.clone(), "wheel", on_wheel, opts)?;
 
-        // -----------------------------------------------------------------------
-        // ResizeObserver
-        // -----------------------------------------------------------------------
-
         let resize_cb: Closure<dyn FnMut(js_sys::Array)> = {
             let app = Rc::clone(&app);
             Closure::new(move |_entries: js_sys::Array| {
@@ -986,10 +924,6 @@ impl WebRuntime {
         if let Some(canvas_el) = document.get_element_by_id(canvas_id) {
             resize_observer.observe(&canvas_el);
         }
-
-        // -----------------------------------------------------------------------
-        // Initial UI Synchronization
-        // -----------------------------------------------------------------------
 
         {
             let a = app.borrow();

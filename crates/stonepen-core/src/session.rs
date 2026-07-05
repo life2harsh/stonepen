@@ -293,7 +293,6 @@ impl InkSession {
                         InkItem::Stroke(s) => {
                             if let Some(pid) = s.parent_id {
                                 if !to_copy_ids.contains(&pid) {
-                                    // Child-only copy: make it standalone
                                     s.parent_id = None;
                                     s.xform = self.doc.effective_xform(s.id);
                                     s.recompute_world_bbox();
@@ -373,7 +372,6 @@ impl InkSession {
 
         let (mut pasted_records, id_map) = bundle.build_paste_items(offset);
 
-        // Remap asset IDs for any image items
         for rec in &mut pasted_records {
             if let InkItem::Image(img) = &mut rec.item {
                 if let Some(&new_aid) = asset_id_map.get(&img.asset_id) {

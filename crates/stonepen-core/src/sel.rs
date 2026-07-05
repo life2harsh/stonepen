@@ -11,7 +11,6 @@ pub enum SelectionIntent {
     Toggle,
 }
 
-/// Query which items intersect with the given polygon lasso bounds.
 pub fn lasso_query(doc: &InkDoc, polygon: &[Point2]) -> Vec<ItemId> {
     if polygon.len() < 3 {
         return Vec::new();
@@ -66,7 +65,6 @@ pub fn lasso_query(doc: &InkDoc, polygon: &[Point2]) -> Vec<ItemId> {
     hits
 }
 
-/// Query which items intersect with the given rectangular marquee bounds.
 pub fn rect_query(doc: &InkDoc, rect: crate::bbox::BBox) -> Vec<ItemId> {
     let candidates = doc.query_bbox(rect);
     let mut hits = Vec::new();
@@ -117,7 +115,6 @@ pub fn rect_query(doc: &InkDoc, rect: crate::bbox::BBox) -> Vec<ItemId> {
     hits
 }
 
-/// Mutate the document's active selection using the specified intent and hits.
 pub fn apply_selection_hits(doc: &mut InkDoc, hits: &[ItemId], intent: SelectionIntent) {
     match intent {
         SelectionIntent::Replace => {
@@ -143,14 +140,12 @@ pub fn apply_selection_hits(doc: &mut InkDoc, hits: &[ItemId], intent: Selection
     }
 }
 
-/// Backward compatibility: replaces current selection with lasso intersections.
 pub fn lasso_select(doc: &mut InkDoc, polygon: &[Point2]) -> Vec<ItemId> {
     let hits = lasso_query(doc, polygon);
     apply_selection_hits(doc, &hits, SelectionIntent::Replace);
     hits
 }
 
-/// Backward compatibility: replaces current selection with rect intersections.
 pub fn select_rect(doc: &mut InkDoc, rect: crate::bbox::BBox) -> Vec<ItemId> {
     let hits = rect_query(doc, rect);
     apply_selection_hits(doc, &hits, SelectionIntent::Replace);

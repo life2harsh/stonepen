@@ -3,7 +3,6 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
-    // Tools
     ToolPen,
     ToolPencil,
     ToolHighlighter,
@@ -11,29 +10,23 @@ pub enum Command {
     ToolLasso,
     ToolSelect,
     ToolPan,
-    // History
     Undo,
     Redo,
-    // Selection
     SelectAll,
     DeleteSelection,
     DuplicateSelection,
     ClearSelection,
-    // Editing
     Copy,
     Cut,
     Paste,
-    // Nudge
     NudgeLeft,
     NudgeRight,
     NudgeUp,
     NudgeDown,
-    // Z-order
     BringForward,
     SendBackward,
     BringToFront,
     SendToBack,
-    // Navigation
     HoldPan,
 }
 
@@ -157,7 +150,6 @@ impl Command {
         }
     }
 
-    /// Whether this command may fire on keyboard auto-repeat.
     pub fn allows_repeat(&self) -> bool {
         matches!(
             self,
@@ -165,7 +157,6 @@ impl Command {
         )
     }
 
-    /// UI group name for the settings shortcut table.
     pub fn group(&self) -> &'static str {
         match self {
             Command::ToolPen
@@ -347,7 +338,6 @@ impl ShortcutMap {
 
     pub fn defaults() -> Self {
         let mut sm = ShortcutMap::new();
-        // Tools
         let _ = sm.add_binding(Command::ToolPen, KeyChord::simple("KeyP"));
         let _ = sm.add_binding(Command::ToolPencil, KeyChord::simple("KeyN"));
         let _ = sm.add_binding(Command::ToolHighlighter, KeyChord::simple("KeyM"));
@@ -355,27 +345,22 @@ impl ShortcutMap {
         let _ = sm.add_binding(Command::ToolLasso, KeyChord::simple("KeyL"));
         let _ = sm.add_binding(Command::ToolSelect, KeyChord::simple("KeyV"));
         let _ = sm.add_binding(Command::ToolPan, KeyChord::simple("KeyH"));
-        // History
         let _ = sm.add_binding(Command::HoldPan, KeyChord::simple("Space"));
         let _ = sm.add_binding(Command::Undo, KeyChord::primary("KeyZ"));
         let _ = sm.add_binding(Command::Redo, KeyChord::primary_shift("KeyZ"));
         let _ = sm.add_binding(Command::Redo, KeyChord::primary("KeyY"));
-        // Selection
         let _ = sm.add_binding(Command::SelectAll, KeyChord::primary("KeyA"));
         let _ = sm.add_binding(Command::DeleteSelection, KeyChord::simple("Delete"));
         let _ = sm.add_binding(Command::DeleteSelection, KeyChord::simple("Backspace"));
         let _ = sm.add_binding(Command::DuplicateSelection, KeyChord::primary("KeyD"));
         let _ = sm.add_binding(Command::ClearSelection, KeyChord::simple("Escape"));
-        // Editing
         let _ = sm.add_binding(Command::Copy, KeyChord::primary("KeyC"));
         let _ = sm.add_binding(Command::Cut, KeyChord::primary("KeyX"));
         let _ = sm.add_binding(Command::Paste, KeyChord::primary("KeyV"));
-        // Nudge
         let _ = sm.add_binding(Command::NudgeLeft, KeyChord::simple("ArrowLeft"));
         let _ = sm.add_binding(Command::NudgeRight, KeyChord::simple("ArrowRight"));
         let _ = sm.add_binding(Command::NudgeUp, KeyChord::simple("ArrowUp"));
         let _ = sm.add_binding(Command::NudgeDown, KeyChord::simple("ArrowDown"));
-        // Z-order
         let _ = sm.add_binding(Command::BringForward, KeyChord::primary("BracketRight"));
         let _ = sm.add_binding(Command::SendBackward, KeyChord::primary("BracketLeft"));
         let _ = sm.add_binding(

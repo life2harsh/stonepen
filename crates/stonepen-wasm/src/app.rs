@@ -1592,7 +1592,6 @@ impl StonepenApp {
             dx * dx + dy * dy <= handle_radius * handle_radius
         };
 
-        // 1. Check all 8 handles
         if let Some(handles) = self.get_selection_handle_screen_pts() {
             for (handle, pt) in handles {
                 if hit_handle(pt.x, pt.y) {
@@ -1602,7 +1601,6 @@ impl StonepenApp {
             }
         }
 
-        // 2. Check rotation handle
         let single_image = self.session.doc.single_selected_image_root();
         if let Some(img_id) = single_image {
             if let Some(InkItem::Image(img)) = self.session.doc.get_item(img_id) {
