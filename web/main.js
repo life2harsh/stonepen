@@ -1,4 +1,5 @@
-import init, { start_stonepen } from "./pkg/stonepen_wasm.js";
+import init, { mount_stonepen } from "./pkg/stonepen_wasm.js";
 
 await init();
-start_stonepen("ink-canvas");
+const stonepen = mount_stonepen("ink-canvas");
+window.stonepen = stonepen;
