@@ -19,6 +19,7 @@ use crate::file_io::{trigger_download, trigger_png_download};
 use crate::keyboard::parse_event_to_chord;
 use crate::pointer::{get_inputs, PointerInput};
 use crate::render_2d::Renderer;
+use crate::web_ui::WebUi;
 use stonepen_core::shortcuts::{
     AppSettings, Command, ConflictError, KeyChord, ShortcutMap, TempPanController,
 };
@@ -1096,6 +1097,13 @@ impl StonepenApp {
             Tool::Pan => "pan",
         };
         self.sync_tool_ui(tool_name);
+        self.sync_brush_controls();
+    }
+
+    pub fn sync_brush_controls(&self) {
+        if let Ok(ui) = WebUi::new() {
+            ui.sync_brush_controls(&self.session.active_brush);
+        }
     }
 
     pub fn action_export_svg(&self) {
@@ -1307,6 +1315,7 @@ impl StonepenApp {
         }
         self.update_status();
         self.redraw();
+        self.sync_brush_controls();
     }
 
     fn sync_tool_ui(&self, active_tool_name: &str) {

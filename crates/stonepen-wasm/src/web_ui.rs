@@ -8,6 +8,7 @@ use wasm_bindgen::JsValue;
 use web_sys::{Document, Element, HtmlElement, HtmlInputElement, Window};
 
 use crate::app::StonepenApp;
+use stonepen_core::brush::Brush;
 use stonepen_core::shortcuts::Command;
 
 pub struct WebUi {
@@ -22,6 +23,23 @@ impl WebUi {
             .document()
             .ok_or_else(|| JsValue::from_str("no document"))?;
         Ok(Self { window, document })
+    }
+
+    // -----------------------------------------------------------------------
+    // Brush controls synchronization
+    // -----------------------------------------------------------------------
+
+    pub fn sync_brush_controls(&self, brush: &Brush) {
+        if let Some(el) = self.document.get_element_by_id("width-slider") {
+            if let Ok(input) = el.dyn_into::<HtmlInputElement>() {
+                input.set_value(&brush.base_w.to_string());
+            }
+        }
+        if let Some(el) = self.document.get_element_by_id("color-picker") {
+            if let Ok(input) = el.dyn_into::<HtmlInputElement>() {
+                input.set_value(&brush.color.to_hex());
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

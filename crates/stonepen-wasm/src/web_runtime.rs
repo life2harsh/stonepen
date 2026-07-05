@@ -14,8 +14,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use web_sys::{
-    AddEventListenerOptions, ClipboardEvent, Element, Event, FileReader,
-    HtmlInputElement, KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent,
+    AddEventListenerOptions, ClipboardEvent, Element, Event, FileReader, HtmlInputElement,
+    KeyboardEvent, PointerEvent, ProgressEvent, ResizeObserver, WheelEvent,
 };
 
 use crate::app::StonepenApp;
@@ -751,6 +751,7 @@ impl WebRuntime {
                 Tool::Pan => "pan",
             };
             ui.sync_tool_buttons(tool_name);
+            ui.sync_brush_controls(&a.session.active_brush);
             ui.update_status(&a);
         }
         app.borrow().redraw();
